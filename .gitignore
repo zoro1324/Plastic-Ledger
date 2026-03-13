@@ -1,2 +1,7 @@
 dataset/
 models/segformer-marida-output
+MARIDA/
+
+__pycache__
+
+checkpoints

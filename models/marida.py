@@ -11,6 +11,8 @@ import json
 from sklearn.metrics import jaccard_score
 import warnings
 warnings.filterwarnings("ignore")
+import random
+import torchvision.transforms.functional as TF
 
 # ─────────────────────────────────────────────
 # STEP 1: CONFIGURATION
@@ -46,6 +48,7 @@ class MARIDADataset(Dataset):
     def __init__(self, data_root, split="train", confidence_threshold=2):
         self.data_root = Path(data_root)
         self.confidence_threshold = confidence_threshold
+        self.split = split
 
         split_file = self.data_root / "splits" / f"{split}_X.txt"
         with open(split_file, "r") as f:
@@ -117,6 +120,21 @@ class MARIDADataset(Dataset):
         image_tensor = torch.tensor(image, dtype=torch.float32)
         mask_tensor = torch.tensor(binary_mask, dtype=torch.long)
 
+        if self.split == "train":
+            # Random horizontal flip
+            if random.random() > 0.5:
+                image_tensor = TF.hflip(image_tensor)
+                mask_tensor = TF.hflip(mask_tensor)
+            # Random vertical flip
+            if random.random() > 0.5:
+                image_tensor = TF.vflip(image_tensor)
+                mask_tensor = TF.vflip(mask_tensor)
+            # Random 90 degree rotations
+            k = random.randint(0, 3)
+            if k > 0:
+                image_tensor = torch.rot90(image_tensor, k, dims=[1, 2])
+                mask_tensor = torch.rot90(mask_tensor, k, dims=[0, 1])
+
         return image_tensor, mask_tensor
 
 
@@ -168,11 +186,34 @@ def build_model(num_classes=2, num_bands=11):
 # Solution: use weighted cross-entropy loss
 # We give more weight (10x) to the rare debris class
 
+class CombinedLoss(nn.Module):
+    def __init__(self, ce_weight, ignore_index=-100):
+        super().__init__()
+        self.ce = nn.CrossEntropyLoss(weight=ce_weight, ignore_index=ignore_index)
+        self.ignore_index = ignore_index
+
+    def forward(self, logits, targets):
+        ce_loss = self.ce(logits, targets)
+        
+        # Calculate Dice loss for class 1 (Marine Debris)
+        probs = F.softmax(logits, dim=1)
+        p1 = probs[:, 1, :, :]
+        
+        valid_mask = (targets != self.ignore_index).float()
+        t1 = (targets == 1).float()
+        
+        intersection = (p1 * t1 * valid_mask).sum(dim=(1, 2))
+        union = (p1 * valid_mask).sum(dim=(1, 2)) + (t1 * valid_mask).sum(dim=(1, 2))
+        dice_score = (2. * intersection + 1e-6) / (union + 1e-6)
+        dice_loss = 1.0 - dice_score.mean()
+        
+        return ce_loss + dice_loss
+
 def get_loss_fn():
     # Weight index 0 = Ignored, index 1 = Debris, 2-15 = other classes
     class_weights = torch.ones(16).to(CONFIG["device"])
-    class_weights[1] = 10.0  # Give more weight to the rare debris class
-    return nn.CrossEntropyLoss(weight=class_weights, ignore_index=-100)
+    class_weights[1] = 20.0  # Increased weight for the rare debris class
+    return CombinedLoss(ce_weight=class_weights, ignore_index=-100)
 
 
 # ─────────────────────────────────────────────
@@ -306,8 +347,8 @@ def main():
     # AdamW is Adam with weight decay → prevents overfitting
     optimizer = torch.optim.AdamW(model.parameters(), lr=CONFIG["learning_rate"], weight_decay=0.01)
 
-    # Learning rate scheduler: reduce LR when validation loss stops improving
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=3, factor=0.5)
+    # Learning rate scheduler: reduce LR when validation IoU stops improving
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", patience=3, factor=0.5)
 
     loss_fn = get_loss_fn()
 
@@ -322,7 +363,7 @@ def main():
         train_loss, train_iou = train_one_epoch(model, train_loader, optimizer, loss_fn, CONFIG["device"])
         val_loss, val_iou     = validate(model, val_loader, loss_fn, CONFIG["device"])
 
-        scheduler.step(val_loss)
+        scheduler.step(val_iou)
 
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)

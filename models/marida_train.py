@@ -318,20 +318,46 @@ class DiceLoss(nn.Module):
         return dice_per_cls.mean()
 
 
+class WeightedCELoss(nn.Module):
+    """Weighted Cross-Entropy — numerically stable fallback for all-ignore batches."""
+    def __init__(self, weight: torch.Tensor, ignore_index: int = 255):
+        super().__init__()
+        self.weight       = weight
+        self.ignore_index = ignore_index
+
+    def forward(self, inputs, targets):
+        inputs = torch.clamp(inputs, -30.0, 30.0)
+        return F.cross_entropy(inputs, targets,
+                               weight=self.weight.to(inputs.device),
+                               ignore_index=self.ignore_index,
+                               label_smoothing=0.05)
+
+
 class CombinedLoss(nn.Module):
     def __init__(self, class_weights: torch.Tensor, focal_gamma: float = 2.0,
                  alpha: float = 0.6):
         """
-        alpha * FocalLoss + (1-alpha) * DiceLoss
+        Train : alpha * FocalLoss + (1-alpha) * DiceLoss
+        Val   : WeightedCE (stable, handles all-ignore batches gracefully)
         """
         super().__init__()
         self.focal = FocalLoss(gamma=focal_gamma, weight=class_weights)
         self.dice  = DiceLoss()
+        self.ce    = WeightedCELoss(weight=class_weights)
         self.alpha = alpha
 
     def forward(self, inputs, targets):
-        return self.alpha * self.focal(inputs, targets) + \
-               (1 - self.alpha) * self.dice(inputs, targets)
+        # Check if batch has any valid (non-ignore) pixels
+        valid_pixels = (targets != 255).sum().item()
+        if valid_pixels == 0:
+            # All-ignore batch: return 0 loss (no signal, no NaN)
+            return torch.tensor(0.0, device=inputs.device, requires_grad=True)
+        focal_l = self.focal(inputs, targets)
+        dice_l  = self.dice(inputs, targets)
+        if not (torch.isfinite(focal_l) and torch.isfinite(dice_l)):
+            # Fallback to stable CE if focal/dice blow up
+            return self.ce(inputs, targets)
+        return self.alpha * focal_l + (1 - self.alpha) * dice_l
 
 
 # ─────────────────────────────────────────────
@@ -454,28 +480,57 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None):
 
 
 @torch.no_grad()
-def evaluate(model, loader, criterion, device):
-    # Cast model to float32 for stable eval (AMP trains in fp16 internally)
+def evaluate(model, loader, criterion, device, debug_first_batch=False):
     model.eval().float()
     total_loss    = 0.0
     valid_batches = 0
+    nan_batches   = 0
     metrics       = SegmentationMetrics(NUM_CLASSES)
 
-    for images, masks in tqdm(loader, desc="  Val  ", leave=False):
+    for batch_idx, (images, masks) in enumerate(tqdm(loader, desc="  Val  ", leave=False)):
         images = images.to(device).float()
         masks  = masks.to(device)
 
         logits         = model(images)
         logits_clamped = torch.clamp(logits, -30.0, 30.0)
-        loss           = criterion(logits_clamped, masks)
 
+        # Debug first batch only
+        if debug_first_batch and batch_idx == 0:
+            print(f"\n  [DEBUG] images  : min={images.min():.4f} max={images.max():.4f} "
+                  f"nan={torch.isnan(images).any()} inf={torch.isinf(images).any()}")
+            print(f"  [DEBUG] logits   : min={logits.min():.4f} max={logits.max():.4f} "
+                  f"nan={torch.isnan(logits).any()} inf={torch.isinf(logits).any()}")
+            print(f"  [DEBUG] masks    : unique={torch.unique(masks).tolist()}")
+            # Try each loss component separately
+            try:
+                focal_l = criterion.focal(logits_clamped, masks)
+                print(f"  [DEBUG] focal    : {focal_l.item():.6f}")
+            except Exception as e:
+                print(f"  [DEBUG] focal    : ERROR {e}")
+            try:
+                dice_l = criterion.dice(logits_clamped, masks)
+                print(f"  [DEBUG] dice     : {dice_l.item():.6f}")
+            except Exception as e:
+                print(f"  [DEBUG] dice     : ERROR {e}")
+
+        loss     = criterion(logits_clamped, masks)
         loss_val = loss.item()
+
         if np.isfinite(loss_val):
             total_loss    += loss_val
             valid_batches += 1
+        else:
+            nan_batches += 1
+            if nan_batches <= 2:
+                print(f"\n  [WARN] NaN/Inf at val batch {batch_idx}: "
+                      f"logits=[{logits.min():.2f},{logits.max():.2f}] "
+                      f"mask={torch.unique(masks).tolist()}")
 
         preds = logits_clamped.argmax(dim=1)
         metrics.update(preds, masks)
+
+    if nan_batches > 0:
+        print(f"  [WARN] {nan_batches}/{nan_batches+valid_batches} val batches had NaN loss")
 
     avg_loss = total_loss / max(valid_batches, 1)
     return {
@@ -590,7 +645,8 @@ def main():
 
         train_metrics = train_one_epoch(model, train_loader, optimizer,
                                         criterion, device, scaler)
-        val_metrics   = evaluate(model, val_loader, criterion, device)
+        val_metrics   = evaluate(model, val_loader, criterion, device,
+                                     debug_first_batch=(epoch == 1))
         scheduler.step()
 
         # Log
@@ -605,10 +661,13 @@ def main():
               f"mIoU: {val_metrics['mIoU']:.4f}  "
               f"DebrisIoU: {val_metrics['debris_iou']:.4f}")
 
-        # Save best model (based on Debris IoU — our primary metric)
+        # Save best model based on val mIoU (more stable signal early in training)
+        # Switch to DebrisIoU once model starts learning (mIoU > 0.05)
+        val_miou   = val_metrics["mIoU"]
         debris_iou = val_metrics["debris_iou"]
-        if not np.isnan(debris_iou) and debris_iou > best_val_debris_iou:
-            best_val_debris_iou = debris_iou
+        save_score = debris_iou if val_miou > 0.05 else val_miou
+        if not np.isnan(save_score) and save_score > best_val_debris_iou:
+            best_val_debris_iou = save_score
             best_epoch          = epoch
             torch.save({
                 "epoch":          epoch,

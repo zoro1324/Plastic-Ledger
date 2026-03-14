@@ -195,24 +195,25 @@ class CombinedLoss(nn.Module):
     def forward(self, logits, targets):
         ce_loss = self.ce(logits, targets)
         
-        # Calculate Dice loss for class 1 (Marine Debris)
+        # Calculate Dice loss for class 1 (Marine Debris) using batch-level sums
+        # This prevents massive penalty spikes on patches that contain 0 debris pixels.
         probs = F.softmax(logits, dim=1)
         p1 = probs[:, 1, :, :]
         
         valid_mask = (targets != self.ignore_index).float()
         t1 = (targets == 1).float()
         
-        intersection = (p1 * t1 * valid_mask).sum(dim=(1, 2))
-        union = (p1 * valid_mask).sum(dim=(1, 2)) + (t1 * valid_mask).sum(dim=(1, 2))
+        intersection = (p1 * t1 * valid_mask).sum()
+        union = (p1 * valid_mask).sum() + (t1 * valid_mask).sum()
         dice_score = (2. * intersection + 1e-6) / (union + 1e-6)
-        dice_loss = 1.0 - dice_score.mean()
+        dice_loss = 1.0 - dice_score
         
-        return ce_loss + dice_loss
+        return ce_loss + 2.0 * dice_loss
 
 def get_loss_fn():
     # Weight index 0 = Ignored, index 1 = Debris, 2-15 = other classes
     class_weights = torch.ones(16).to(CONFIG["device"])
-    class_weights[1] = 20.0  # Increased weight for the rare debris class
+    class_weights[1] = 12.0  # Slightly increased weight but balanced with Dice
     return CombinedLoss(ce_weight=class_weights, ignore_index=-100)
 
 
@@ -347,8 +348,8 @@ def main():
     # AdamW is Adam with weight decay → prevents overfitting
     optimizer = torch.optim.AdamW(model.parameters(), lr=CONFIG["learning_rate"], weight_decay=0.01)
 
-    # Learning rate scheduler: reduce LR when validation IoU stops improving
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", patience=3, factor=0.5)
+    # Learning rate scheduler: smoothly decay LR to eta_min over num_epochs
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=CONFIG["num_epochs"], eta_min=1e-6)
 
     loss_fn = get_loss_fn()
 
@@ -363,7 +364,7 @@ def main():
         train_loss, train_iou = train_one_epoch(model, train_loader, optimizer, loss_fn, CONFIG["device"])
         val_loss, val_iou     = validate(model, val_loader, loss_fn, CONFIG["device"])
 
-        scheduler.step(val_iou)
+        scheduler.step()
 
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)

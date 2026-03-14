@@ -5,3 +5,4 @@ MARIDA/
 __pycache__
 
 checkpoints
+runs/

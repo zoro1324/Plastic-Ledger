@@ -455,25 +455,34 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None):
 
 @torch.no_grad()
 def evaluate(model, loader, criterion, device):
-    model.eval()
-    total_loss = 0.0
-    metrics    = SegmentationMetrics(NUM_CLASSES)
+    # Cast model to float32 for stable eval (AMP trains in fp16 internally)
+    model.eval().float()
+    total_loss    = 0.0
+    valid_batches = 0
+    metrics       = SegmentationMetrics(NUM_CLASSES)
 
     for images, masks in tqdm(loader, desc="  Val  ", leave=False):
-        images = images.to(device)
+        images = images.to(device).float()
         masks  = masks.to(device)
-        logits = model(images)
-        loss   = criterion(logits, masks)
-        total_loss += loss.item()
-        preds = logits.argmax(dim=1)
+
+        logits         = model(images)
+        logits_clamped = torch.clamp(logits, -30.0, 30.0)
+        loss           = criterion(logits_clamped, masks)
+
+        loss_val = loss.item()
+        if np.isfinite(loss_val):
+            total_loss    += loss_val
+            valid_batches += 1
+
+        preds = logits_clamped.argmax(dim=1)
         metrics.update(preds, masks)
 
-    n = len(loader)
+    avg_loss = total_loss / max(valid_batches, 1)
     return {
-        "loss":         total_loss / n,
-        "mIoU":         metrics.mean_iou(),
-        "pixel_acc":    metrics.pixel_accuracy(),
-        "debris_iou":   metrics.debris_iou(),
+        "loss":       avg_loss,
+        "mIoU":       metrics.mean_iou(),
+        "pixel_acc":  metrics.pixel_accuracy(),
+        "debris_iou": metrics.debris_iou(),
     }
 
 
@@ -546,7 +555,7 @@ def main():
     # ── Model ─────────────────────────────────
     print(f"\nBuilding U-Net ({args.encoder} encoder, {NUM_BANDS} bands → {NUM_CLASSES} classes)...")
     model = build_model(num_classes=NUM_CLASSES, num_bands=NUM_BANDS,
-                        encoder=args.encoder).to(device)
+                        encoder=args.encoder).to(device).float()  # always float32; AMP casts internally
 
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  Trainable parameters: {total_params:,}")

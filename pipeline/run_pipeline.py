@@ -5,14 +5,13 @@ Orchestrates all 7 stages end-to-end with progress logging,
 stage caching, and graceful error handling.
 
 Usage:
-    python pipeline/run_pipeline.py \\
-        --bbox "80.0,8.0,82.0,10.0" \\
-        --start_date "2024-01-01" \\
-        --end_date "2024-01-31" \\
-        --output_dir "data/runs/run_001" \\
-        --model_path "models/runs/marida_v1/best_model.pth" \\
-        --cloud_cover 20 \\
-        --backtrack_days 30 \\
+    python pipeline/run_pipeline.py \
+        --bbox "80.0,8.0,82.0,10.0" \
+        --target_date "2024-01-31" \
+        --output_dir "data/runs/run_001" \
+        --model_path "models/runs/marida_v1/best_model.pth" \
+        --cloud_cover 20 \
+        --backtrack_days 30 \
         --skip_stages ""
 """
 
@@ -52,8 +51,7 @@ def _parse_skip_stages(skip_str: str) -> Set[int]:
 
 def run_pipeline(
     bbox: Tuple[float, float, float, float],
-    start_date: str,
-    end_date: str,
+    target_date: str,
     output_dir: Union[str, Path],
     model_path: Union[str, Path],
     cloud_cover: int = 20,
@@ -65,8 +63,7 @@ def run_pipeline(
 
     Args:
         bbox: ``(lon_min, lat_min, lon_max, lat_max)``.
-        start_date: Start date ISO string.
-        end_date: End date ISO string.
+        target_date: Maximum date to search backwards from (ISO string).
         output_dir: Root output directory for this run.
         model_path: Path to the trained model checkpoint.
         cloud_cover: Maximum cloud cover percentage.
@@ -111,8 +108,7 @@ def run_pipeline(
 
     run_summary = {
         "bbox": list(bbox),
-        "start_date": start_date,
-        "end_date": end_date,
+        "target_date": target_date,
         "model_path": str(model_path),
         "stages_completed": [],
         "stages_skipped": list(skip_stages),
@@ -127,7 +123,7 @@ def run_pipeline(
         console.print(Panel(
             "[bold cyan]🌊 Plastic-Ledger Pipeline[/]\n"
             f"  BBox: {bbox}\n"
-            f"  Dates: {start_date} → {end_date}\n"
+            f"  Target Date: {target_date}\n"
             f"  Cloud Cover: ≤{cloud_cover}%\n"
             f"  Back-track: {backtrack_days} days\n"
             f"  Skip Stages: {skip_stages or 'none'}",
@@ -136,7 +132,7 @@ def run_pipeline(
     except ImportError:
         print(f"\n{'='*60}")
         print(f"  Plastic-Ledger Pipeline")
-        print(f"  BBox: {bbox}, Dates: {start_date}-{end_date}")
+        print(f"  BBox: {bbox}, Target Date: {target_date}")
         print(f"{'='*60}")
 
     scene_dirs = []
@@ -153,8 +149,8 @@ def run_pipeline(
             ingest_run = ingest_mod.run
             scene_dirs, scene_metas = ingest_run(
                 bbox=bbox,
-                date_start=start_date,
-                date_end=end_date,
+                date_start="2015-01-01",  # Search all history
+                date_end=target_date,     # Up to the target date
                 cloud_cover_max=cloud_cover,
                 output_dir=str(raw_dir),
                 config=config,
@@ -420,8 +416,7 @@ def main():
         "--bbox", type=str, required=True,
         help="Bounding box: 'lon_min,lat_min,lon_max,lat_max'",
     )
-    parser.add_argument("--start_date", type=str, required=True)
-    parser.add_argument("--end_date", type=str, required=True)
+    parser.add_argument("--date", type=str, required=True, help="Find the last available scene on or before this date")
     parser.add_argument(
         "--output_dir", type=str, default="data/runs/run_001",
         help="Output directory for this run",
@@ -450,8 +445,7 @@ def main():
 
     summary = run_pipeline(
         bbox=bbox,
-        start_date=args.start_date,
-        end_date=args.end_date,
+        target_date=args.date,
         output_dir=args.output_dir,
         model_path=args.model_path,
         cloud_cover=args.cloud_cover,

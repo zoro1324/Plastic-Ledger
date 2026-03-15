@@ -70,9 +70,9 @@ def generate_pdf(
     # ── Page 1: Executive Summary ─────────────────
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 20)
-    pdf.cell(0, 15, "Plastic-Ledger Report", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 15, "Plastic-Ledger Report", align="C", ln=1)
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 8, f"Scene: {scene_id}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, f"Scene: {scene_id}", align="C", ln=1)
     pdf.ln(10)
 
     # Summary statistics
@@ -94,13 +94,13 @@ def generate_pdf(
             det_date = str(dates.iloc[0])
 
     pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, "Executive Summary", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 10, "Executive Summary", ln=1)
     pdf.set_font("Helvetica", "", 11)
 
     summary_lines = [
         f"Detection Date: {det_date}",
         f"Total Debris Clusters: {n_clusters}",
-        f"Total Debris Area: {total_area_km2:.4f} km²  ({total_area:.0f} m²)",
+        f"Total Debris Area: {total_area_km2:.4f} sq km  ({total_area:.0f} sq m)",
         f"Dominant Polymer Type: {dominant_polymer}",
     ]
     if attribution_data:
@@ -111,19 +111,18 @@ def generate_pdf(
         )
 
     for line in summary_lines:
-        pdf.cell(0, 7, line, new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 7, line, ln=1)
 
     # ── Detection Map ─────────────────────────────
     if detection_map_path and detection_map_path.exists():
         pdf.ln(5)
         pdf.set_font("Helvetica", "B", 12)
-        pdf.cell(0, 10, "Detection Map", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 10, "Detection Map", ln=1)
         try:
             pdf.image(str(detection_map_path), w=180)
         except Exception as exc:
             pdf.set_font("Helvetica", "", 9)
-            pdf.cell(0, 7, f"(Map image could not be embedded: {exc})",
-                     new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(0, 7, f"(Map image could not be embedded: {exc})", ln=1)
 
     # ── Page 2: Polymer Distribution ──────────────
     if n_clusters > 0 and "polymer_type" in detections_gdf.columns:
@@ -133,7 +132,7 @@ def generate_pdf(
 
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 14)
-        pdf.cell(0, 10, "Polymer Distribution", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 10, "Polymer Distribution", ln=1)
         if pie_path.exists():
             try:
                 pdf.image(str(pie_path), w=140)
@@ -144,7 +143,7 @@ def generate_pdf(
     if attribution_data:
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 14)
-        pdf.cell(0, 10, "Source Attribution — Top 3", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 10, "Source Attribution - Top 3", ln=1)
         pdf.ln(5)
 
         for i, attr in enumerate(attribution_data[:3]):
@@ -152,8 +151,8 @@ def generate_pdf(
             pdf.cell(
                 0, 8,
                 f"#{i+1}: {attr.get('source_type', 'Unknown')} "
-                f"— {attr.get('attribution_score', 0)*100:.0f}% confidence",
-                new_x="LMARGIN", new_y="NEXT",
+                f"- {attr.get('attribution_score', 0)*100:.0f}% confidence",
+                ln=1,
             )
             pdf.set_font("Helvetica", "", 10)
             explanation = attr.get("explanation", "No explanation available.")
@@ -165,7 +164,7 @@ def generate_pdf(
     if trajectory_map_path and trajectory_map_path.exists():
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 14)
-        pdf.cell(0, 10, "Back-Track Trajectories", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 10, "Back-Track Trajectories", ln=1)
         try:
             pdf.image(str(trajectory_map_path), w=180)
         except Exception:
@@ -175,13 +174,13 @@ def generate_pdf(
     if n_clusters > 0:
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 14)
-        pdf.cell(0, 10, "Debris Cluster Details", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 10, "Debris Cluster Details", ln=1)
         pdf.ln(3)
 
         # Table header
         pdf.set_font("Helvetica", "B", 8)
         col_widths = [15, 25, 20, 40, 25, 30, 30]
-        headers = ["ID", "Area (m²)", "Confidence", "Polymer", "Lat", "Lon", "Source"]
+        headers = ["ID", "Area (sq m)", "Confidence", "Polymer", "Lat", "Lon", "Source"]
         for w, h in zip(col_widths, headers):
             pdf.cell(w, 7, h, border=1)
         pdf.ln()
@@ -345,8 +344,9 @@ def generate_csv(
         Path to the saved CSV.
     """
     if len(detections_gdf) == 0:
+        logger.info("Empty GeoDataFrame provided. Returning basic CSV with headers.")
         df = pd.DataFrame(columns=[
-            "cluster_id", "lat", "lon", "area_m2", "polymer_type",
+            "cluster_id", "lat", "lon", "area_sq_m", "polymer_type",
             "confidence", "top_source_type", "top_source_location",
             "top_source_country", "attribution_score", "detection_date",
             "scene_id",
@@ -369,7 +369,7 @@ def generate_csv(
             "cluster_id": cid,
             "lat": det.get("centroid_lat", 0),
             "lon": det.get("centroid_lon", 0),
-            "area_m2": det.get("area_m2", 0),
+            "area_sq_m": det.get("area_m2", 0),
             "polymer_type": det.get("polymer_type", ""),
             "confidence": det.get("mean_confidence", 0),
             "top_source_type": attr.get("source_type", ""),
@@ -430,7 +430,7 @@ def print_terminal_summary(
                 style="cyan",
             )
             table.add_column("ID", style="bold")
-            table.add_column("Area (m²)", justify="right")
+            table.add_column("Area (sq m)", justify="right")
             table.add_column("Confidence", justify="right")
             table.add_column("Polymer Type")
             table.add_column("Location")

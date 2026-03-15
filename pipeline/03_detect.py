@@ -224,8 +224,8 @@ def stitch_patches(
         ``(num_classes, H, W)`` full-scene probability map.
     """
     h, w = scene_shape
-    prob_sum = np.zeros((num_classes, h, w), dtype=np.float64)
-    count = np.zeros((h, w), dtype=np.float64)
+    prob_sum = np.zeros((num_classes, h, w), dtype=np.float16)
+    count = np.zeros((h, w), dtype=np.float16)
 
     patch_ids = sorted(patch_index.keys())
     for patch_id, pred in zip(patch_ids, predictions):

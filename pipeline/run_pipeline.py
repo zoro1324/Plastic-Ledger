@@ -157,6 +157,13 @@ def run_pipeline(
             )
             run_summary["stages_completed"].append(1)
             run_summary["outputs"]["raw_scenes"] = [str(d) for d in scene_dirs]
+            
+            # Store scene dates for summary
+            run_summary["scene_dates"] = {
+                meta["id"]: meta.get("datetime", "Unknown") 
+                for meta in scene_metas
+            }
+            
         except Exception as exc:
             logger.error("Stage 1 failed: %s", exc)
             run_summary["stages_failed"].append({"stage": 1, "error": str(exc)})
@@ -182,7 +189,12 @@ def run_pipeline(
     # Process each scene through stages 2-7
     for scene_dir in scene_dirs:
         scene_id = scene_dir.name
-        logger.info("\n[bold magenta]Processing scene: %s[/]", scene_id)
+        
+        # Display the date if we have it
+        scene_date = run_summary.get("scene_dates", {}).get(scene_id, "")
+        date_str = f" ({scene_date[:10]})" if scene_date else ""
+        
+        logger.info("\n[bold magenta]Processing scene: %s%s[/]", scene_id, date_str)
 
         # Scene-level paths
         scene_processed = processed_dir / scene_id
@@ -384,6 +396,10 @@ def _save_summary(
     # Final output
     n_completed = len(set(summary["stages_completed"]))
     n_failed = len(summary["stages_failed"])
+    
+    # Format dates list if available
+    dates_found = summary.get("scene_dates", {})
+    dates_str = f"\n  Fetched Dates: {', '.join([d[:10] for d in dates_found.values() if d])}" if dates_found else ""
 
     try:
         from rich.console import Console
@@ -393,14 +409,14 @@ def _save_summary(
             f"[bold green]✅ Pipeline Complete[/]\n"
             f"  Stages completed: {n_completed}\n"
             f"  Stages failed: {n_failed}\n"
-            f"  Time elapsed: {elapsed:.1f}s\n"
+            f"  Time elapsed: {elapsed:.1f}s{dates_str}\n"
             f"  Summary: {summary_path}\n"
             f"  Reports: {summary.get('outputs', {}).get('reports', 'N/A')}",
             style="green",
         ))
     except ImportError:
         print(f"\n✅ Pipeline complete: {n_completed} stages, "
-              f"{n_failed} failures, {elapsed:.1f}s")
+              f"{n_failed} failures, {elapsed:.1f}s{dates_str}")
         print(f"   Summary: {summary_path}")
 
 

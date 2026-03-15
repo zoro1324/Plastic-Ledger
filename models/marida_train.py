@@ -204,9 +204,24 @@ class MARIDADataset(Dataset):
         mask = np.where(mask_raw > 0, mask_raw - 1, 255).astype(np.int64)
         # mask: 0..14 = valid classes, 255 = ignore (background/unlabeled)
 
-        # Normalize per-band
+        # Identify nodata pixels: any pixel where ALL bands are 0 is a fill pixel
+        nodata_mask = (image.sum(axis=0) == 0)  # (H, W) bool
+
+        # Clip raw reflectance to valid S2 range [0.0001, 0.5]
+        image = np.clip(image, 0.0001, 0.5)
+
+        # Normalize per-band (z-score)
         for b in range(NUM_BANDS):
             image[b] = (image[b] - BAND_MEANS[b]) / (BAND_STDS[b] + 1e-6)
+
+        # Replace nodata pixels with 0.0 (mean of normalized distribution)
+        image[:, nodata_mask] = 0.0
+
+        # Final safety clip: [-5, 5] covers 5-sigma range
+        image = np.clip(image, -5.0, 5.0)
+
+        # NaN/Inf guard
+        image = np.nan_to_num(image, nan=0.0, posinf=5.0, neginf=-5.0)
 
         # Augmentation (albumentations expects HWC)
         if self.transform is not None:
@@ -447,21 +462,12 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None):
 
         optimizer.zero_grad()
 
-        if scaler is not None:  # Mixed precision
-            with torch.cuda.amp.autocast():
-                logits = model(images)
-                loss   = criterion(logits, masks)
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            logits = model(images)
-            loss   = criterion(logits, masks)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+        # Always use float32 — AMP causing NaN with this dataset
+        logits = model(images)
+        loss   = criterion(logits, masks)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
 
         loss_val = loss.item()
         if not torch.isfinite(torch.tensor(loss_val)):
@@ -627,7 +633,7 @@ def main():
     # ── Optimizer / Scheduler ─────────────────
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
-    scaler    = torch.cuda.amp.GradScaler() if use_amp else None
+    scaler    = None  # AMP disabled — causes NaN with MARIDA's nodata pixels
 
     # ── History ───────────────────────────────
     history = {"train": {"loss": [], "mIoU": [], "pixel_acc": [], "debris_iou": []},
@@ -644,7 +650,7 @@ def main():
         print(f"\nEpoch {epoch:>3}/{args.epochs}  |  LR: {scheduler.get_last_lr()[0]:.2e}")
 
         train_metrics = train_one_epoch(model, train_loader, optimizer,
-                                        criterion, device, scaler)
+                                        criterion, device, scaler=None)
         val_metrics   = evaluate(model, val_loader, criterion, device,
                                      debug_first_batch=(epoch == 1))
         scheduler.step()

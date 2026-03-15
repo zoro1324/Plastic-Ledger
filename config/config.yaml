@@ -1,0 +1,39 @@
+model:
+  checkpoint: models/runs/marida_v1/best_model.pth
+  num_bands: 11
+  num_classes: 15
+  encoder: resnet34
+  debris_threshold: 0.3
+  tta: true
+
+preprocessing:
+  patch_size: 256
+  overlap: 32
+  band_means: [0.057, 0.054, 0.046, 0.036, 0.033, 0.041, 0.049, 0.043, 0.050, 0.031, 0.019]
+  band_stds:  [0.010, 0.010, 0.013, 0.010, 0.012, 0.020, 0.030, 0.020, 0.030, 0.020, 0.013]
+
+detection:
+  min_cluster_area_m2: 100
+  debris_class_index: 0
+
+backtracking:
+  days: 30
+  n_particles: 50
+  time_step_hours: 1
+  ocean_wind_ratio: [0.97, 0.03]
+  dbscan_eps_degrees: 0.5
+  dbscan_min_samples: 5
+
+attribution:
+  weights:
+    fishing: 0.4
+    industrial: 0.3
+    shipping: 0.2
+    river: 0.1
+  search_radius_km: 10
+
+apis:
+  copernicus_username: ${COPERNICUS_USERNAME}
+  copernicus_password: ${COPERNICUS_PASSWORD}
+  gfw_token: ${GFW_TOKEN}
+  cds_url: https://cds.climate.copernicus.eu/api/v2

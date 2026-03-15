@@ -122,10 +122,22 @@ def preprocess(tif_path, band_means, band_stds):
 # INFERENCE
 # ─────────────────────────────────────────────
 @torch.no_grad()
-def infer(model, image_np, device):
+def infer(model, image_np, device, use_tta=False):
     t = torch.from_numpy(image_np).unsqueeze(0).float().to(device)
-    logits = torch.clamp(model(t), -30.0, 30.0)
-    probs  = F.softmax(logits, dim=1)[0].cpu().numpy()
+    if use_tta:
+        preds = []
+        def _fwd(x):
+            return F.softmax(torch.clamp(model(x), -30.0, 30.0), dim=1)
+        preds.append(_fwd(t))
+        preds.append(_fwd(torch.flip(t,[-1])).flip([-1]))
+        preds.append(_fwd(torch.flip(t,[-2])).flip([-2]))
+        preds.append(torch.rot90(_fwd(torch.rot90(t,1,[-2,-1])), -1, [-2,-1]))
+        preds.append(torch.rot90(_fwd(torch.rot90(t,2,[-2,-1])), -2, [-2,-1]))
+        preds.append(torch.rot90(_fwd(torch.rot90(t,3,[-2,-1])), -3, [-2,-1]))
+        probs = torch.stack(preds).mean(0)[0].cpu().numpy()
+    else:
+        logits = torch.clamp(model(t), -30.0, 30.0)
+        probs  = F.softmax(logits, dim=1)[0].cpu().numpy()
     return probs.argmax(axis=0), probs
 
 
@@ -321,6 +333,8 @@ def main():
     parser.add_argument("--split",    type=str, default="test",
                         choices=["train", "val", "test"])
     parser.add_argument("--output",   type=str, default="evaluation")
+    parser.add_argument("--tta",      action="store_true",
+                        help="Use test-time augmentation (8 variants, slower but more accurate)")
     args = parser.parse_args()
 
     data_dir   = Path(args.data_dir)
@@ -333,6 +347,7 @@ def main():
     print(f"📊 Split  : {args.split}\n")
 
     model, band_means, band_stds = load_model(args.model, device)
+    print(f"  TTA enabled : {args.tta}")
 
     # Load split
     split_file = data_dir / "splits" / f"{args.split}_X.txt"
@@ -364,7 +379,7 @@ def main():
 
         try:
             image_np, nodata = preprocess(img_path, band_means, band_stds)
-            pred_mask, probs = infer(model, image_np, device)
+            pred_mask, probs = infer(model, image_np, device, use_tta=args.tta)
             pred_mask[nodata] = 6  # nodata → Marine Water
 
             with rasterio.open(msk_path) as src:

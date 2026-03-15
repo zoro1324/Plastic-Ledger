@@ -78,7 +78,8 @@ def search_scenes(
         bbox=bbox,
         datetime=f"{date_start}/{date_end}",
         query={"eo:cloud_cover": {"lt": cloud_cover_max}},
-        max_items=max_items,
+        sortby=[{"field": "datetime", "direction": "desc"}],
+        max_items=1,
     )
 
     items = list(search.items())
@@ -105,8 +106,12 @@ def search_scenes(
             "geometry": item.geometry,
         })
 
-    # Sort by cloud cover ascending
-    results.sort(key=lambda x: x.get("cloud_cover", 100))
+    # Sort by datetime descending (newest first)
+    results.sort(key=lambda x: x.get("datetime", ""), reverse=True)
+    
+    # Keep only the newest scene per the user's request
+    results = results[:1]
+    
     return results
 
 

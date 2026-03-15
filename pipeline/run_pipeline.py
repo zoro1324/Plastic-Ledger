@@ -17,12 +17,18 @@ Usage:
 """
 
 import argparse
+import importlib
 import json
 import shutil
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
+
+# Ensure project root is on sys.path for direct script execution
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 from pipeline.utils.logging_utils import get_logger
 from pipeline.utils.cache_utils import load_config
@@ -143,7 +149,8 @@ def run_pipeline(
     if 1 not in skip_stages:
         logger.info("[bold blue]━━━ Stage 1: Satellite Data Ingestion ━━━[/]")
         try:
-            from pipeline.01_ingest import run as ingest_run
+            ingest_mod = importlib.import_module("pipeline.01_ingest")
+            ingest_run = ingest_mod.run
             scene_dirs, scene_metas = ingest_run(
                 bbox=bbox,
                 date_start=start_date,
@@ -200,7 +207,8 @@ def run_pipeline(
         if 2 not in skip_stages:
             logger.info("[bold blue]━━━ Stage 2: Preprocessing ━━━[/]")
             try:
-                from pipeline.02_preprocess import run as preprocess_run
+                preprocess_mod = importlib.import_module("pipeline.02_preprocess")
+                preprocess_run = preprocess_mod.run
                 patches_dir, patch_index = preprocess_run(
                     scene_dir=str(scene_dir),
                     output_dir=str(processed_dir),
@@ -223,7 +231,8 @@ def run_pipeline(
         if 3 not in skip_stages:
             logger.info("[bold blue]━━━ Stage 3: Marine Debris Detection ━━━[/]")
             try:
-                from pipeline.03_detect import run as detect_run
+                detect_mod = importlib.import_module("pipeline.03_detect")
+                detect_run = detect_mod.run
                 geojson_path = detect_run(
                     scene_id=scene_id,
                     patches_dir=str(patches_dir),
@@ -248,7 +257,8 @@ def run_pipeline(
         if 4 not in skip_stages:
             logger.info("[bold blue]━━━ Stage 4: Polymer Classification ━━━[/]")
             try:
-                from pipeline.04_polymer import run as polymer_run
+                polymer_mod = importlib.import_module("pipeline.04_polymer")
+                polymer_run = polymer_mod.run
                 classified_path, polymer_counts = polymer_run(
                     scene_id=scene_id,
                     detections_path=str(geojson_path),
@@ -276,7 +286,8 @@ def run_pipeline(
         if 5 not in skip_stages:
             logger.info("[bold blue]━━━ Stage 5: Hydrodynamic Back-Tracking ━━━[/]")
             try:
-                from pipeline.05_backtrack import run as backtrack_run
+                backtrack_mod = importlib.import_module("pipeline.05_backtrack")
+                backtrack_run = backtrack_mod.run
                 sources = backtrack_run(
                     scene_id=scene_id,
                     detections_path=str(classified_path),
@@ -305,7 +316,8 @@ def run_pipeline(
         if 6 not in skip_stages:
             logger.info("[bold blue]━━━ Stage 6: Source Attribution ━━━[/]")
             try:
-                from pipeline.06_attribute import run as attribute_run
+                attribute_mod = importlib.import_module("pipeline.06_attribute")
+                attribute_run = attribute_mod.run
                 attribution_path = attribute_run(
                     scene_id=scene_id,
                     sources=sources,
@@ -329,7 +341,8 @@ def run_pipeline(
         if 7 not in skip_stages:
             logger.info("[bold blue]━━━ Stage 7: Report Generation ━━━[/]")
             try:
-                from pipeline.07_report import run as report_run
+                report_mod = importlib.import_module("pipeline.07_report")
+                report_run = report_mod.run
                 report_outputs = report_run(
                     scene_id=scene_id,
                     detections_path=str(classified_path),

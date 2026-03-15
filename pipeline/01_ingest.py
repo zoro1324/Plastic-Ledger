@@ -98,7 +98,10 @@ def search_scenes(
             "datetime": str(item.datetime),
             "cloud_cover": item.properties.get("eo:cloud_cover", None),
             "bbox": item.bbox,
-            "assets": {k: v.href for k, v in item.assets.items()},
+            "assets": {
+                k: v.extra_fields.get("alternate", {}).get("https", {}).get("href", v.href)
+                for k, v in item.assets.items()
+            },
             "geometry": item.geometry,
         })
 

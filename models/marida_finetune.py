@@ -33,7 +33,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, OneCycleLR, ReduceLROnPlateau
 
 try:
     import rasterio
@@ -329,7 +329,7 @@ class FineTuneLoss(nn.Module):
         if not torch.isfinite(dice_l):  dice_l  = inputs.sum() * 0.0
         if not torch.isfinite(bce_l):   bce_l   = inputs.sum() * 0.0
 
-        return 0.4 * focal_l + 0.3 * dice_l + 0.3 * bce_l
+        return 0.3 * focal_l + 0.2 * dice_l + 0.5 * bce_l
 
 
 # ─────────────────────────────────────────────
@@ -437,7 +437,7 @@ class DebrisMetrics:
 # ─────────────────────────────────────────────
 # TRAINING LOOP
 # ─────────────────────────────────────────────
-def train_one_epoch(model, loader, optimizer, criterion, device):
+def train_one_epoch(model, loader, optimizer, criterion, device, scheduler=None):
     model.train()
     total_loss = 0.0
     n_batches  = 0
@@ -453,6 +453,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        # scheduler steps per epoch (ReduceLROnPlateau), not per batch
 
         lv = loss.item()
         if np.isfinite(lv):
@@ -533,18 +534,20 @@ def main():
     parser.add_argument("--output_dir",       type=str, default="runs/marida_v2")
     parser.add_argument("--epochs",           type=int, default=40)
     parser.add_argument("--batch_size",       type=int, default=8)
-    parser.add_argument("--lr",               type=float, default=1e-5,
-                        help="Learning rate (default 1e-5 = 10x smaller than original)")
-    parser.add_argument("--debris_weight",    type=float, default=8.0,
-                        help="How many times more likely debris patches are sampled (default 8)")
-    parser.add_argument("--debris_bce_weight",type=float, default=10.0,
-                        help="Positive weight for debris BCE loss term (default 10)")
+    parser.add_argument("--lr",               type=float, default=1e-4,
+                        help="Learning rate (default 1e-4, good for decoder-only fine-tuning)")
+    parser.add_argument("--debris_weight",    type=float, default=2.0,
+                        help="Oversampling weight for debris patches (default 2.0)")
+    parser.add_argument("--debris_bce_weight",type=float, default=20.0,
+                        help="Positive weight for debris BCE loss term (default 20)")
     parser.add_argument("--tta",              action="store_true",
                         help="Use test-time augmentation during validation (slower but better)")
-    parser.add_argument("--freeze_encoder",   action="store_true",
-                        help="Freeze encoder weights — only fine-tune decoder")
+    parser.add_argument("--freeze_encoder",   action="store_true", default=True,
+                        help="Freeze encoder weights — only fine-tune decoder (default: True)")
+    parser.add_argument("--unfreeze_encoder", action="store_true",
+                        help="Unfreeze encoder (override freeze_encoder default)")
     parser.add_argument("--warm_restarts",    type=int, default=10,
-                        help="LR warm restart period in epochs (default 10)")
+                        help="[Deprecated — OneCycleLR used instead]")
     args = parser.parse_args()
 
     data_dir   = Path(args.data_dir)
@@ -572,13 +575,19 @@ def main():
         in_channels     = num_bands,
         classes         = num_cls,
         activation      = None,
+        decoder_dropout = 0.2,   # decoder-only training needs moderate dropout
     ).to(device).float()
-    model.load_state_dict(ckpt["model_state"])
+
+    # Load weights — ignore decoder_dropout mismatch (new param, not in checkpoint)
+    state = ckpt["model_state"]
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing:
+        print(f"  ℹ️  Missing keys (expected for dropout): {len(missing)}")
     print(f"  ✅ Loaded checkpoint  (epoch={ckpt.get('epoch','?')}  "
           f"Val mIoU={ckpt.get('val_metrics',{}).get('mIoU',0):.4f})")
 
-    # ── Freeze encoder if requested ───────────────────────
-    if args.freeze_encoder:
+    # ── Freeze encoder (default) unless --unfreeze_encoder passed ──
+    if args.freeze_encoder and not getattr(args, "unfreeze_encoder", False):
         for p in model.encoder.parameters():
             p.requires_grad = False
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -613,9 +622,15 @@ def main():
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=args.lr, weight_decay=1e-4
     )
-    # CosineAnnealingWarmRestarts: re-heats LR every T_0 epochs
-    scheduler = CosineAnnealingWarmRestarts(
-        optimizer, T_0=args.warm_restarts, T_mult=1, eta_min=args.lr * 0.01
+    # ReduceLROnPlateau: halve LR when val IoU stops improving for 3 epochs
+    # No warmup — model is already trained, we just want gentle targeted updates
+    scheduler = ReduceLROnPlateau(
+        optimizer,
+        mode     = "max",       # maximise val IoU
+        factor   = 0.5,         # halve LR on plateau
+        patience = 5,           # wait 5 epochs before reducing
+        min_lr   = args.lr * 0.01,
+        verbose  = True,
     )
 
     # ── Training ──────────────────────────────────────────
@@ -632,7 +647,7 @@ def main():
     print(f"{'='*65}")
 
     for epoch in range(1, args.epochs+1):
-        lr_now = scheduler.get_last_lr()[0]
+        lr_now = optimizer.param_groups[0]["lr"]
         print(f"\nEpoch {epoch:>3}/{args.epochs}  |  LR: {lr_now:.2e}")
 
         train_loss, train_m = train_one_epoch(
@@ -640,7 +655,9 @@ def main():
         val_loss, val_m = evaluate(
             model, val_loader, criterion, device, use_tta=args.tta)
 
-        scheduler.step()
+        # Step ReduceLROnPlateau with val IoU
+        scheduler.step(val_m.iou())
+        lr_actual = optimizer.param_groups[0]["lr"]
 
         print(f"  Train → loss:{train_loss:.4f}  {train_m.summary()}")
         print(f"  Val   → loss:{val_loss:.4f}  {val_m.summary()}")
@@ -654,6 +671,9 @@ def main():
 
         # Save best model on val debris IoU (patches with ≥5 GT pixels)
         val_iou = val_m.iou()
+        if best_val_iou > 0 and val_iou < best_val_iou - 0.05:
+            print(f"  ⚠️  Val IoU dropped {best_val_iou:.4f}→{val_iou:.4f}  "
+                  f"(best was epoch {best_epoch}, now {epoch-best_epoch} epochs ago)")
         if val_iou > best_val_iou and val_m.n_patches() > 0:
             best_val_iou = val_iou
             best_epoch   = epoch

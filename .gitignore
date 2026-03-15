@@ -3,6 +3,7 @@ models/segformer-marida-output
 MARIDA/
 
 __pycache__
+*.pyc
 
 checkpoints
 runs/
@@ -12,3 +13,28 @@ evaluation/
 
 best_models/
 *.pth
+
+# Pipeline data (large / generated)
+data/raw/
+data/processed/
+data/detections/
+data/attribution/
+data/reference/
+data/reports/
+data/runs/
+
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store

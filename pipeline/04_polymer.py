@@ -216,16 +216,6 @@ def run(
 
     # Load detections
     gdf = gpd.read_file(detections_path)
-    if len(gdf) == 0:
-        logger.info("No detections to classify — saving empty file")
-        gdf["polymer_type"] = []
-        gdf["pi_value"] = []
-        gdf["sr_value"] = []
-        gdf["nsi_value"] = []
-        gdf["fdi_value"] = []
-        gdf["is_false_positive"] = []
-        gdf.to_file(out_path, driver="GeoJSON")
-        return out_path, {}
 
     # Load the raw (un-normalized) scene for spectral extraction
     # First try to reconstruct from patches
@@ -237,6 +227,7 @@ def run(
         with open(scene_meta_path) as fh:
             scene_meta = json.load(fh)
         shape_info = scene_meta["original_shape"]
+        scene_crs = scene_meta.get("crs")
 
         # Load patch index and reconstruct
         index_path = processed_dir / "patch_index.json"
@@ -267,6 +258,23 @@ def run(
                 scene_transform = Affine(*tf_list[:6])
             else:
                 scene_transform = Affine(10, 0, 0, 0, -10, 0)
+    else:
+        scene_crs = None
+
+    if len(gdf) == 0:
+        logger.info("No detections to classify — saving empty file")
+        gdf["polymer_type"] = []
+        gdf["pi_value"] = []
+        gdf["sr_value"] = []
+        gdf["nsi_value"] = []
+        gdf["fdi_value"] = []
+        gdf["is_false_positive"] = []
+        gdf.to_file(out_path, driver="GeoJSON")
+        return out_path, {}
+
+    gdf_for_spectra = gdf
+    if scene_crs and gdf.crs and str(gdf.crs) != str(scene_crs):
+        gdf_for_spectra = gdf.to_crs(scene_crs)
 
     # Classify each cluster
     polymer_types = []
@@ -277,9 +285,10 @@ def run(
     is_false_positives = []
 
     for idx, row in gdf.iterrows():
+        spectral_geom = gdf_for_spectra.geometry.iloc[idx]
         if scene_data is not None and scene_transform is not None:
             spectrum = extract_cluster_spectra(
-                row.geometry, scene_data, scene_transform,
+                spectral_geom, scene_data, scene_transform,
             )
         else:
             spectrum = None

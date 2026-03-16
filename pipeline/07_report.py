@@ -262,8 +262,32 @@ def _generate_detection_map(
     fig.patch.set_facecolor("#0d1117")
     ax.set_facecolor("#1a1a2e")
 
-    if len(gdf) > 0:
-        gdf.plot(ax=ax, color="#E63946", alpha=0.7, edgecolor="white", linewidth=0.5)
+    plot_gdf = gdf.copy()
+    if len(plot_gdf) > 0 and "geometry" in plot_gdf.columns:
+        plot_gdf = plot_gdf[plot_gdf.geometry.notna()]
+        plot_gdf = plot_gdf[~plot_gdf.geometry.is_empty]
+
+    if len(plot_gdf) > 0:
+        bounds = plot_gdf.total_bounds
+        finite_bounds = np.all(np.isfinite(bounds))
+        height = bounds[3] - bounds[1] if finite_bounds else np.nan
+        width = bounds[2] - bounds[0] if finite_bounds else np.nan
+
+        if not finite_bounds or height <= 0 or width <= 0:
+            ax.set_aspect("auto")
+
+        # Plot in raw data coordinates to avoid GeoPandas applying geographic
+        # aspect logic to mislabeled or projected geometries.
+        plot_gdf = plot_gdf.set_crs(None, allow_override=True)
+
+        plot_gdf.plot(
+            ax=ax,
+            color="#E63946",
+            alpha=0.7,
+            edgecolor="white",
+            linewidth=0.5,
+            aspect="auto",
+        )
         ax.set_title(f"Debris Detections ({len(gdf)} clusters)",
                      color="white", fontsize=13, fontweight="bold")
     else:

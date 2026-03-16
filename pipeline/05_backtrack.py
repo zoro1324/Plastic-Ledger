@@ -15,6 +15,7 @@ Dependencies: copernicusmarine, cdsapi, numpy, scipy, geopandas, sklearn, xarray
 
 import argparse
 import json
+import os
 import sys
 import warnings
 from datetime import datetime, timedelta
@@ -67,6 +68,12 @@ def download_ocean_currents(
     try:
         import copernicusmarine as cm
 
+        # Map .env credential names to what copernicusmarine reads
+        if os.environ.get("COPERNICUS_USERNAME"):
+            os.environ["COPERNICUSMARINE_SERVICE_USERNAME"] = os.environ["COPERNICUS_USERNAME"]
+        if os.environ.get("COPERNICUS_PASSWORD"):
+            os.environ["COPERNICUSMARINE_SERVICE_PASSWORD"] = os.environ["COPERNICUS_PASSWORD"]
+
         @retry_request
         def _download():
             cm.subset(
@@ -80,7 +87,6 @@ def download_ocean_currents(
                 end_datetime=date_end,
                 output_directory=str(output_dir),
                 output_filename="ocean_currents.nc",
-                force_download=True,
             )
 
         _download()
@@ -130,9 +136,20 @@ def download_wind_data(
     try:
         import cdsapi
 
+        # Support credentials from .env:  CDS_API_KEY and optionally CDS_API_URL.
+        # The new CDS-Beta endpoint uses a bare API key; the legacy endpoint uses
+        # the "UID:API-KEY" format.  Both work when passed directly to the Client.
+        _cds_kwargs: dict = {}
+        cds_key = os.environ.get("CDS_API_KEY")
+        cds_url = os.environ.get(
+            "CDS_API_URL", "https://cds.climate.copernicus.eu/api"
+        )
+        if cds_key:
+            _cds_kwargs = {"url": cds_url, "key": cds_key}
+
         @retry_request
         def _download():
-            c = cdsapi.Client()
+            c = cdsapi.Client(**_cds_kwargs)
             c.retrieve(
                 "reanalysis-era5-single-levels",
                 {
@@ -157,7 +174,12 @@ def download_wind_data(
         logger.warning("cdsapi not installed — using synthetic wind data")
         return None
     except Exception as exc:
-        logger.warning("ERA5 download failed: %s — using synthetic wind", exc)
+        logger.warning(
+            "ERA5 download failed: %s — using synthetic wind\n"
+            "  Tip: add CDS_API_KEY=<your-key> to your .env file "
+            "(get a key at https://cds.climate.copernicus.eu/profile)",
+            exc,
+        )
         return None
 
 
@@ -177,7 +199,20 @@ def _load_velocity_field(nc_path: Optional[Path]) -> Optional[Any]:
         return None
     try:
         import xarray as xr
-        return xr.open_dataset(nc_path)
+        import pandas as pd
+        ds = xr.open_dataset(nc_path)
+        # CMEMS data often has cftime objects (object dtype) for the time coordinate.
+        # Nearest-neighbor sel() on object-dtype time indices is extremely slow
+        # due to pandas falling back to element-wise comparison — convert to datetime64.
+        if ds.time.dtype == object:
+            try:
+                times_pd = pd.DatetimeIndex(
+                    [pd.Timestamp(str(t)) for t in ds.time.values]
+                )
+                ds = ds.assign_coords(time=times_pd)
+            except Exception:
+                pass
+        return ds
     except Exception as exc:
         logger.warning("Failed to load %s: %s", nc_path, exc)
         return None
@@ -210,15 +245,17 @@ def _interpolate_velocity(
         return float(rng.normal(0.02, 0.01)), float(rng.normal(0.01, 0.01))
 
     try:
+        import pandas as pd
+        time_ts = pd.Timestamp(time_dt)
         u = float(
             ds[u_var].sel(
-                longitude=lon, latitude=lat, time=time_dt,
+                longitude=lon, latitude=lat, time=time_ts,
                 method="nearest",
             ).values
         )
         v = float(
             ds[v_var].sel(
-                longitude=lon, latitude=lat, time=time_dt,
+                longitude=lon, latitude=lat, time=time_ts,
                 method="nearest",
             ).values
         )
@@ -607,7 +644,8 @@ def main():
     config = load_config(args.config)
     bbox = None
     if args.bbox:
-        bbox = tuple(float(x) for x in args.bbox.split(","))
+        lon_min, lat_min, lon_max, lat_max = (float(x) for x in args.bbox.split(","))
+        bbox = (lon_min, lat_min, lon_max, lat_max)
 
     sources = run(
         scene_id=args.scene_id,

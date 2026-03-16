@@ -159,7 +159,8 @@ def download_wind_data(
                         "10m_v_component_of_wind",
                     ],
                     "area": [bbox[3], bbox[0], bbox[1], bbox[2]],  # N, W, S, E
-                    "date": f"{date_start}/{date_end}",
+                    # ERA5 requires plain YYYY-MM-DD; strip any time/tz component
+                    "date": f"{date_start[:10]}/{date_end[:10]}",
                     "time": [f"{h:02d}:00" for h in range(24)],
                     "format": "netcdf",
                 },
@@ -187,13 +188,14 @@ def download_wind_data(
 # CURRENT/WIND INTERPOLATION
 # ─────────────────────────────────────────────
 def _load_velocity_field(nc_path: Optional[Path]) -> Optional[Any]:
-    """Load a NetCDF velocity field as an xarray Dataset.
+    """Load a NetCDF velocity field into an in-memory numpy dict.
 
     Args:
         nc_path: Path to the NetCDF file.
 
     Returns:
-        :class:`xarray.Dataset` or ``None``.
+        Dict with keys ``times``, ``lats``, ``lons``, ``data`` (all numpy),
+        or ``None`` if the file is missing or unreadable.
     """
     if nc_path is None or not nc_path.exists():
         return None
@@ -201,35 +203,65 @@ def _load_velocity_field(nc_path: Optional[Path]) -> Optional[Any]:
         import xarray as xr
         import pandas as pd
         ds = xr.open_dataset(nc_path)
-        # CMEMS data often has cftime objects (object dtype) for the time coordinate.
-        # Nearest-neighbor sel() on object-dtype time indices is extremely slow
-        # due to pandas falling back to element-wise comparison — convert to datetime64.
-        if ds.time.dtype == object:
-            try:
-                times_pd = pd.DatetimeIndex(
-                    [pd.Timestamp(str(t)) for t in ds.time.values]
-                )
-                ds = ds.assign_coords(time=times_pd)
-            except Exception:
-                pass
-        return ds
+
+        # ── coordinate names (CMEMS uses 'longitude'/'latitude'; ERA5 does too) ──
+        lon_name = "longitude" if "longitude" in ds.coords else "lon"
+        lat_name = "latitude" if "latitude" in ds.coords else "lat"
+        # ERA5 from the new CDS-Beta API uses 'valid_time' instead of 'time'
+        if "time" in ds.coords:
+            time_name = "time"
+        elif "valid_time" in ds.coords:
+            time_name = "valid_time"
+        else:
+            time_name = next(
+                (c for c in ds.coords if "time" in c.lower()), list(ds.dims)[0]
+            )
+
+        # ── time → tz-naive datetime64[ns] ──────────────────────────────────────
+        # CMEMS data often uses cftime objects (object dtype).  Convert to plain
+        # datetime64[ns] so numpy arithmetic works without pandas dtype juggling.
+        times_raw = ds[time_name].values
+        if times_raw.dtype == object:
+            times_np = np.array(
+                [np.datetime64(pd.Timestamp(str(t)).replace(tzinfo=None), "ns")
+                 for t in times_raw],
+                dtype="datetime64[ns]",
+            )
+        else:
+            # Cast to ns; if tz-aware, the cast strips the tz component.
+            times_np = times_raw.astype("datetime64[ns]")
+
+        lats_np = ds[lat_name].values.astype(np.float64)
+        lons_np = ds[lon_name].values.astype(np.float64)
+
+        # ── preload data variables into numpy ───────────────────────────────────
+        # Squeeze out any singleton depth dimension so shape is (time, lat, lon).
+        data: Dict[str, Any] = {}
+        for var in ds.data_vars:
+            arr = ds[var].values          # triggers actual disk read — done once
+            while arr.ndim > 3:
+                arr = arr[:, 0]           # drop leading extra dim (e.g. depth)
+            data[var] = arr.astype(np.float32)
+
+        return {"times": times_np, "lats": lats_np, "lons": lons_np, "data": data}
+
     except Exception as exc:
         logger.warning("Failed to load %s: %s", nc_path, exc)
         return None
 
 
 def _interpolate_velocity(
-    ds: Optional[Any],
+    field: Optional[Any],
     lon: float,
     lat: float,
     time_dt: datetime,
     u_var: str = "uo",
     v_var: str = "vo",
 ) -> Tuple[float, float]:
-    """Interpolate velocity at a point from gridded data.
+    """Interpolate velocity at a point using preloaded numpy arrays.
 
     Args:
-        ds: xarray Dataset with velocity fields.
+        field: Dict returned by :func:`_load_velocity_field`, or ``None``.
         lon: Longitude.
         lat: Latitude.
         time_dt: Datetime for temporal interpolation.
@@ -239,26 +271,25 @@ def _interpolate_velocity(
     Returns:
         ``(u, v)`` velocity in m/s.
     """
-    if ds is None:
+    if field is None:
         # Synthetic fallback: small random current
         rng = np.random.default_rng(int(abs(lon * 1000 + lat * 1000)))
         return float(rng.normal(0.02, 0.01)), float(rng.normal(0.01, 0.01))
 
     try:
-        import pandas as pd
-        time_ts = pd.Timestamp(time_dt)
-        u = float(
-            ds[u_var].sel(
-                longitude=lon, latitude=lat, time=time_ts,
-                method="nearest",
-            ).values
-        )
-        v = float(
-            ds[v_var].sel(
-                longitude=lon, latitude=lat, time=time_ts,
-                method="nearest",
-            ).values
-        )
+        # Strip timezone so comparison is always tz-naive vs tz-naive.
+        tz = getattr(time_dt, "tzinfo", None)
+        time_naive = time_dt.replace(tzinfo=None) if tz is not None else time_dt
+        time_np = np.datetime64(time_naive, "ns")
+
+        # Pure numpy nearest-neighbour — no xarray/pandas overhead per call.
+        t_idx   = int(np.argmin(np.abs(field["times"] - time_np)))
+        lat_idx = int(np.argmin(np.abs(field["lats"]  - lat)))
+        lon_idx = int(np.argmin(np.abs(field["lons"]  - lon)))
+
+        u = float(field["data"][u_var][t_idx, lat_idx, lon_idx])
+        v = float(field["data"][v_var][t_idx, lat_idx, lon_idx])
+
         if np.isnan(u):
             u = 0.0
         if np.isnan(v):

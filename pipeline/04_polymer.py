@@ -55,11 +55,56 @@ B08_IDX = 7   # NIR
 B8A_IDX = 8   # Narrow NIR
 B11_IDX = 9   # SWIR 1
 
+# Per-band z-score stats that Stage 2 uses — must stay in sync with
+# pipeline/02_preprocess.py BAND_MEANS / BAND_STDS.
+# These are applied in reverse here to recover raw reflectance values.
+BAND_MEANS = np.array([0.057, 0.054, 0.046, 0.036, 0.033,
+                       0.041, 0.049, 0.043, 0.050, 0.031, 0.019],
+                      dtype=np.float32)
+BAND_STDS  = np.array([0.010, 0.010, 0.013, 0.010, 0.012,
+                       0.020, 0.030, 0.020, 0.030, 0.020, 0.013],
+                      dtype=np.float32)
+# Band positions that were zero-padded during preprocessing (not downloaded)
+# and therefore carry no real spectral information.
+ZERO_PADDED_BANDS = [0, 5, 6]  # B01, B06, B07
+
 # Wavelength centers (nm) for FDI calculation
 WL_B06 = 740
 WL_B08 = 832
 WL_B11 = 1610
 WL_RED = 665  # B04
+
+
+# ─────────────────────────────────────────────
+# NODATA HELPER
+# ─────────────────────────────────────────────
+def _compute_nodata_fraction(
+    geom: Any,
+    nodata_mask: np.ndarray,
+    transform: Affine,
+) -> float:
+    """Return the fraction of pixels inside *geom* that are nodata.
+
+    Returns 1.0 when the geometry falls entirely outside the raster or
+    masking fails.
+    """
+    from rasterio.features import geometry_mask
+
+    h, w = nodata_mask.shape
+    try:
+        inside = geometry_mask(
+            [mapping(geom)],
+            out_shape=(h, w),
+            transform=transform,
+            invert=True,
+        )
+    except Exception:
+        return 1.0
+
+    if not inside.any():
+        return 1.0
+
+    return float(nodata_mask[inside].sum()) / float(inside.sum())
 
 
 # ─────────────────────────────────────────────
@@ -232,6 +277,7 @@ def run(
     scene_meta_path = processed_dir / "scene_meta.json"
     scene_data = None
     scene_transform = None
+    nodata_mask_2d: Optional[np.ndarray] = None
 
     if scene_meta_path.exists():
         with open(scene_meta_path) as fh:
@@ -271,6 +317,29 @@ def run(
             count = np.maximum(count, 1.0)
             scene_data /= count[np.newaxis, :, :]
 
+            # --- Denormalize: patches store z-score values; spectral
+            # thresholds expect raw surface reflectance (0–1 scale).
+            # raw = normalized * std + mean  (per band)
+            # Nodata pixels were zeroed in Stage 2 and must remain 0.
+            nodata_mask_path = processed_dir / "nodata_mask.npy"
+            if nodata_mask_path.exists():
+                nodata_mask_2d = np.load(nodata_mask_path)
+
+            valid = ~nodata_mask_2d if nodata_mask_2d is not None else np.ones(
+                (h, w), dtype=bool
+            )
+            for b_idx in range(scene_data.shape[0]):
+                scene_data[b_idx, valid] = (
+                    scene_data[b_idx, valid] * BAND_STDS[b_idx] + BAND_MEANS[b_idx]
+                )
+                scene_data[b_idx, ~valid] = 0.0
+
+            # Zero-padded bands have no real signal — reset to 0 so that
+            # the spectral formulae that use them (e.g. FDI via B06) do
+            # not produce artefacts from accidental non-zero averaged values.
+            for b_idx in ZERO_PADDED_BANDS:
+                scene_data[b_idx] = 0.0
+
             tf_list = scene_meta.get("transform")
             if tf_list:
                 scene_transform = Affine(*tf_list[:6])
@@ -302,8 +371,28 @@ def run(
     fdi_values = []
     is_false_positives = []
 
+    n_nodata = 0
     for idx, row in gdf.iterrows():
         spectral_geom = gdf_for_spectra.geometry.iloc[idx]
+
+        # -----------------------------------------------------------
+        # Guard: detections whose footprint is mostly nodata are false
+        # positives produced by the model on unobserved pixels.
+        # -----------------------------------------------------------
+        if (
+            nodata_mask_2d is not None
+            and scene_transform is not None
+            and _compute_nodata_fraction(spectral_geom, nodata_mask_2d, scene_transform) > 0.5
+        ):
+            polymer_types.append("No Data Region")
+            pi_values.append(0.0)
+            sr_values.append(0.0)
+            nsi_values.append(0.0)
+            fdi_values.append(0.0)
+            is_false_positives.append(True)
+            n_nodata += 1
+            continue
+
         if scene_data is not None and scene_transform is not None:
             spectrum = extract_cluster_spectra(
                 spectral_geom, scene_data, scene_transform,
@@ -341,8 +430,8 @@ def run(
     n_fp = sum(is_false_positives)
 
     logger.info(
-        "[bold green]Stage 4 complete[/] — %d clusters classified, %d false positives",
-        len(gdf), n_fp,
+        "[bold green]Stage 4 complete[/] — %d clusters classified, %d false positives (%d nodata regions)",
+        len(gdf), n_fp, n_nodata,
     )
     for ptype, cnt in counts.items():
         logger.info("  %s: %d", ptype, cnt)

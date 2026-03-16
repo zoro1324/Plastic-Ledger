@@ -358,9 +358,21 @@ def run(
 
     patch_size = PATCH_SIZE
     overlap = OVERLAP
+    patch_storage = "npy"
+    patch_dtype = "float32"
     if config:
-        patch_size = config.get("preprocessing", {}).get("patch_size", PATCH_SIZE)
-        overlap = config.get("preprocessing", {}).get("overlap", OVERLAP)
+        pre_cfg = config.get("preprocessing", {})
+        patch_size = pre_cfg.get("patch_size", PATCH_SIZE)
+        overlap = pre_cfg.get("overlap", OVERLAP)
+        patch_storage = str(pre_cfg.get("patch_storage", "npy")).lower()
+        patch_dtype = str(pre_cfg.get("patch_dtype", "float32")).lower()
+
+    if patch_storage not in {"npy", "npz"}:
+        logger.warning("Unknown patch_storage='%s' — falling back to 'npy'", patch_storage)
+        patch_storage = "npy"
+    if patch_dtype not in {"float16", "float32"}:
+        logger.warning("Unknown patch_dtype='%s' — falling back to 'float32'", patch_dtype)
+        patch_dtype = "float32"
 
     out_dir = Path(output_dir) / scene_id
     patches_dir = out_dir / "patches"
@@ -399,8 +411,12 @@ def run(
     patch_index = {}
     for i, (patch, info) in enumerate(zip(patches, patch_infos)):
         patch_id = f"patch_{i:04d}"
-        patch_path = patches_dir / f"{patch_id}.npy"
-        np.save(patch_path, patch)
+        patch_arr = patch.astype(np.float16 if patch_dtype == "float16" else np.float32, copy=False)
+        patch_path = patches_dir / f"{patch_id}.{patch_storage}"
+        if patch_storage == "npz":
+            np.savez_compressed(patch_path, patch=patch_arr)
+        else:
+            np.save(patch_path, patch_arr)
 
         # Build geo_transform for this patch
         if transform is not None:
@@ -423,6 +439,7 @@ def run(
             "col_start": info["col_start"],
             "actual_h": info["actual_h"],
             "actual_w": info["actual_w"],
+            "patch_file": patch_path.name,
             "geo_transform": geo_transform_list,
             "crs": str(crs) if crs else None,
             "nodata_mask_path": str(nodata_path),
@@ -440,6 +457,8 @@ def run(
         "num_patches": len(patches),
         "patch_size": patch_size,
         "overlap": overlap,
+        "patch_storage": patch_storage,
+        "patch_dtype": patch_dtype,
         "crs": str(crs) if crs else None,
         "transform": list(transform)[:6] if transform else None,
     }

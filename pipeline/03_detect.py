@@ -201,6 +201,16 @@ def run_tta_inference(
     return accumulated / len(aug_types)
 
 
+def _load_patch_array(patch_path: Path) -> np.ndarray:
+    """Load a patch array from .npy or .npz file."""
+    if patch_path.suffix == ".npz":
+        with np.load(patch_path) as data:
+            if "patch" in data:
+                return data["patch"]
+            return data[list(data.files)[0]]
+    return np.load(patch_path)
+
+
 # ─────────────────────────────────────────────
 # PATCH STITCHING
 # ─────────────────────────────────────────────
@@ -432,14 +442,23 @@ def run(
     patch_ids = sorted(patch_index.keys())
 
     for i, patch_id in enumerate(patch_ids):
-        patch_path = patches_dir / f"{patch_id}.npy"
+        info = patch_index.get(patch_id, {})
+        patch_file = info.get("patch_file", f"{patch_id}.npy")
+        patch_path = patches_dir / patch_file
+        if not patch_path.exists():
+            npz_fallback = patches_dir / f"{patch_id}.npz"
+            npy_fallback = patches_dir / f"{patch_id}.npy"
+            if npz_fallback.exists():
+                patch_path = npz_fallback
+            elif npy_fallback.exists():
+                patch_path = npy_fallback
         if not patch_path.exists():
             logger.warning("Patch file missing: %s", patch_path)
             # Create zero prediction
             predictions.append(np.zeros((NUM_CLASSES, 256, 256), dtype=np.float32))
             continue
 
-        patch = np.load(patch_path)
+        patch = _load_patch_array(patch_path)
         prob_map = run_tta_inference(model, patch, device, use_tta=use_tta)
         predictions.append(prob_map)
 

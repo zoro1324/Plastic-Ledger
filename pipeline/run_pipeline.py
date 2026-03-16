@@ -57,6 +57,7 @@ def run_pipeline(
     cloud_cover: int = 20,
     backtrack_days: int = 30,
     skip_stages: Set[int] = None,
+    cleanup_patches: bool = False,
     config_path: str = "config/config.yaml",
 ) -> Dict[str, Any]:
     """Run the complete Plastic-Ledger pipeline.
@@ -69,6 +70,7 @@ def run_pipeline(
         cloud_cover: Maximum cloud cover percentage.
         backtrack_days: Days to back-track particles.
         skip_stages: Set of stage numbers (1–7) to skip.
+        cleanup_patches: If True, delete Stage 2 patch cache after Stage 4.
         config_path: Path to YAML config file.
 
     Returns:
@@ -126,6 +128,7 @@ def run_pipeline(
             f"  Target Date: {target_date}\n"
             f"  Cloud Cover: ≤{cloud_cover}%\n"
             f"  Back-track: {backtrack_days} days\n"
+            f"  Cleanup Patches: {'yes' if cleanup_patches else 'no'}\n"
             f"  Skip Stages: {skip_stages or 'none'}",
             style="cyan",
         ))
@@ -287,6 +290,15 @@ def run_pipeline(
             if not classified_path.exists():
                 classified_path = geojson_path
 
+        if cleanup_patches and classified_path.exists():
+            reclaimed_mb = _cleanup_scene_patch_cache(scene_processed)
+            if reclaimed_mb > 0:
+                logger.info(
+                    "Cleaned Stage 2 patch cache for %s (freed %.1f MB)",
+                    scene_id,
+                    reclaimed_mb,
+                )
+
         # ═══════════════════════════════════════
         # STAGE 5 — Hydrodynamic Back-Tracking
         # ═══════════════════════════════════════
@@ -420,6 +432,47 @@ def _save_summary(
         print(f"   Summary: {summary_path}")
 
 
+def _cleanup_scene_patch_cache(scene_processed_dir: Path) -> float:
+    """Delete heavyweight Stage 2 patch cache for one scene.
+
+    This removes patch tiles and cache markers so Stage 2 can regenerate
+    cleanly if needed in a future run.
+
+    Args:
+        scene_processed_dir: Path like ``processed/<scene_id>``.
+
+    Returns:
+        Reclaimed size in MB.
+    """
+    reclaimed_bytes = 0
+
+    patches_dir = scene_processed_dir / "patches"
+    if patches_dir.exists():
+        for pattern in ("*.npy", "*.npz"):
+            for p in patches_dir.rglob(pattern):
+                try:
+                    reclaimed_bytes += p.stat().st_size
+                    p.unlink()
+                except Exception:
+                    continue
+        # Remove empty patch directory tree if possible.
+        try:
+            shutil.rmtree(patches_dir)
+        except Exception:
+            pass
+
+    for f in ["patch_index.json", "nodata_mask.npy"]:
+        fp = scene_processed_dir / f
+        if fp.exists():
+            try:
+                reclaimed_bytes += fp.stat().st_size
+                fp.unlink()
+            except Exception:
+                continue
+
+    return reclaimed_bytes / (1024 * 1024)
+
+
 # ─────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────
@@ -445,6 +498,10 @@ def main():
     parser.add_argument("--cloud_cover", type=int, default=20)
     parser.add_argument("--backtrack_days", type=int, default=30)
     parser.add_argument(
+        "--cleanup_patches", action="store_true",
+        help="Delete Stage 2 patch cache (.npy) after Stage 4 to save disk space",
+    )
+    parser.add_argument(
         "--skip_stages", type=str, default="",
         help="Comma-separated stage numbers to skip, e.g. '1,5'",
     )
@@ -467,6 +524,7 @@ def main():
         cloud_cover=args.cloud_cover,
         backtrack_days=args.backtrack_days,
         skip_stages=skip,
+        cleanup_patches=args.cleanup_patches,
         config_path=args.config,
     )
 

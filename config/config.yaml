@@ -3,7 +3,7 @@ model:
   num_bands: 11
   num_classes: 15
   encoder: resnet34
-  debris_threshold: 0.3
+  debris_threshold: 0.1
   tta: true
 
 preprocessing:

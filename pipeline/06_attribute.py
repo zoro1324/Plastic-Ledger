@@ -31,6 +31,20 @@ from pipeline.utils.cache_utils import load_config, stage_output_exists
 logger = get_logger(__name__)
 
 
+def _should_retry_gfw_error(exc: Exception) -> bool:
+    """Retry transient request failures, but fail fast on permanent 4xx errors."""
+    try:
+        import requests
+    except Exception:
+        return True
+
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status = exc.response.status_code if exc.response is not None else None
+        if status is not None and 400 <= status < 500 and status != 429:
+            return False
+    return True
+
+
 # ─────────────────────────────────────────────
 # FISHING VESSEL SCORING
 # ─────────────────────────────────────────────
@@ -54,24 +68,35 @@ def score_fishing(
         Dict with ``score`` (0–1), ``vessel_count``, ``vessel_ids``.
     """
     expanded = expand_bbox(source_bbox, search_radius_km / 111.0)
+    centroid_lat = (source_bbox[1] + source_bbox[3]) / 2
+
+    # GFW frequently rejects geometries very close to the poles.
+    if abs(centroid_lat) >= 80:
+        logger.info("  Skipping GFW query at polar latitude (%.2f)", centroid_lat)
+        fishing_heuristic = max(0, 1.0 - abs(centroid_lat) / 60.0) * 0.5
+        return {
+            "score": fishing_heuristic,
+            "vessel_count": 0,
+            "vessel_ids": [],
+            "gfw_unprocessable": True,
+        }
 
     if not gfw_token:
         logger.info("  No GFW token — using heuristic fishing score")
         # Heuristic: coastal areas in high-fishing zones score higher
-        centroid_lat = (source_bbox[1] + source_bbox[3]) / 2
         # Fishing is more common in tropical/subtropical zones
         fishing_heuristic = max(0, 1.0 - abs(centroid_lat) / 60.0) * 0.5
         return {
             "score": fishing_heuristic,
             "vessel_count": 0,
             "vessel_ids": [],
+            "gfw_unprocessable": False,
         }
 
     try:
         import requests
 
-        @retry_request
-        def _query_gfw():
+        def _query_gfw_impl():
             headers = {"Authorization": f"Bearer {gfw_token}"}
             url = "https://gateway.api.globalfishingwatch.org/v3/4wings/report"
             params = {
@@ -95,6 +120,11 @@ def score_fishing(
             resp.raise_for_status()
             return resp.json()
 
+        _query_gfw = retry_request(
+            _query_gfw_impl,
+            retry_if=_should_retry_gfw_error,
+        )
+
         data = _query_gfw()
         vessel_count = len(data.get("entries", []))
         score = min(1.0, vessel_count / 20.0)
@@ -103,11 +133,18 @@ def score_fishing(
             "score": score,
             "vessel_count": vessel_count,
             "vessel_ids": [e.get("vesselId", "") for e in data.get("entries", [])[:10]],
+            "gfw_unprocessable": False,
         }
 
     except Exception as exc:
         logger.warning("GFW query failed: %s", exc)
-        return {"score": 0.3, "vessel_count": 0, "vessel_ids": []}
+        is_422 = " 422 " in f" {exc} "
+        return {
+            "score": 0.3,
+            "vessel_count": 0,
+            "vessel_ids": [],
+            "gfw_unprocessable": is_422,
+        }
 
 
 # ─────────────────────────────────────────────
@@ -127,9 +164,17 @@ def score_industrial(
         Dict with ``score`` (0–1), ``site_count``, ``site_names``.
     """
     expanded = expand_bbox(source_bbox, search_radius_km / 111.0)
+    centroid_lat = (source_bbox[1] + source_bbox[3]) / 2
+
+    # OSM coverage/queries are unreliable near polar regions; use heuristic.
+    if abs(centroid_lat) >= 80:
+        logger.info("  Skipping OSM query at polar latitude (%.2f)", centroid_lat)
+        return {"score": 0.2, "site_count": 0, "site_names": []}
 
     try:
         import osmnx as ox
+
+        ox.settings.timeout = 20
 
         tags = {
             "amenity": ["waste_disposal", "waste_transfer_station", "recycling"],
@@ -137,22 +182,12 @@ def score_industrial(
             "man_made": ["wastewater_plant"],
         }
 
-        site_count = 0
-        site_names = []
-
-        for tag_key, tag_values in tags.items():
-            for tag_val in tag_values:
-                try:
-                    gdf = ox.features_from_bbox(
-                        bbox=expanded,
-                        tags={tag_key: tag_val},
-                    )
-                    site_count += len(gdf)
-                    if "name" in gdf.columns:
-                        names = gdf["name"].dropna().tolist()[:5]
-                        site_names.extend(names)
-                except Exception:
-                    continue
+        gdf = ox.features_from_bbox(
+            bbox=expanded,
+            tags=tags,
+        )
+        site_count = len(gdf)
+        site_names = gdf["name"].dropna().tolist()[:10] if "name" in gdf.columns else []
 
         score = min(1.0, site_count / 10.0)
         return {
@@ -422,6 +457,7 @@ def run(
     weights = {"fishing": 0.4, "industrial": 0.3, "shipping": 0.2, "river": 0.1}
     search_radius_km = 10.0
     gfw_token = None
+    disable_gfw = False
     reference_dir = Path("data/reference")
 
     if config:
@@ -464,10 +500,18 @@ def run(
         )
 
         # Score each dimension
+        fishing_score = score_fishing(
+            src_bbox,
+            date_start,
+            date_end,
+            None if disable_gfw else gfw_token,
+            search_radius_km,
+        )
+        if fishing_score.get("gfw_unprocessable"):
+            disable_gfw = True
+
         scores = {
-            "fishing": score_fishing(
-                src_bbox, date_start, date_end, gfw_token, search_radius_km,
-            ),
+            "fishing": fishing_score,
             "industrial": score_industrial(src_bbox, search_radius_km),
             "shipping": score_shipping(src_bbox, reference_dir),
             "river": score_river(src_bbox, reference_dir),

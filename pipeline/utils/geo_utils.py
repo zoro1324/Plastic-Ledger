@@ -137,6 +137,7 @@ def retry_request(
     retries: int = 3,
     base_delay: float = 2.0,
     exceptions: Tuple = (Exception,),
+    retry_if: Optional[Callable[[Exception], bool]] = None,
 ) -> Callable:
     """Decorator / wrapper for HTTP calls with exponential back-off.
 
@@ -145,6 +146,8 @@ def retry_request(
         retries: Maximum number of retry attempts.
         base_delay: Initial delay in seconds (doubles each retry).
         exceptions: Tuple of exception classes to catch.
+        retry_if: Optional predicate receiving an exception and returning
+            whether to retry. If ``None``, all caught exceptions are retried.
 
     Returns:
         Wrapped callable with retry logic.
@@ -160,6 +163,8 @@ def retry_request(
             try:
                 return func(*args, **kwargs)
             except exceptions as exc:
+                if retry_if is not None and not retry_if(exc):
+                    raise
                 last_exc = exc
                 if attempt < retries:
                     delay = base_delay * (2 ** attempt)

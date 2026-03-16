@@ -21,7 +21,7 @@ data/detections/
 data/attribution/
 data/reference/
 data/reports/
-data/runs/
+data/
 
 # Environment
 .env

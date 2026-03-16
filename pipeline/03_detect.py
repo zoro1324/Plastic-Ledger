@@ -503,7 +503,10 @@ def run(
     )
 
     geojson_path = out_dir / "detections.geojson"
-    gdf.to_file(geojson_path, driver="GeoJSON")
+    geojson_gdf = gdf
+    if not gdf.empty and gdf.crs and str(gdf.crs) != "EPSG:4326":
+        geojson_gdf = gdf.to_crs("EPSG:4326")
+    geojson_gdf.to_file(geojson_path, driver="GeoJSON")
 
     logger.info(
         "[bold green]Stage 3 complete[/] — %d clusters, debris pixels=%d (%.3f%%)",

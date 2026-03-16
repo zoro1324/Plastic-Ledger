@@ -42,8 +42,9 @@ logger = get_logger(__name__)
 NUM_CLASSES = 15
 NUM_BANDS = 11
 DEBRIS_CLASS_INDEX = 0
-DEFAULT_THRESHOLD = 0.3
-MIN_CLUSTER_AREA_M2 = 100  # 4 pixels at 10m resolution
+DEFAULT_THRESHOLD = 0.15
+MIN_CLUSTER_AREA_M2 = 100          # 4 pixels at 10m resolution
+MAX_CLUSTER_AREA_M2 = 50_000_000   # 50 km² — anything larger is a false positive
 
 CLASS_MAP = {
     0: "Marine Debris", 1: "Dense Sargassum", 2: "Sparse Sargassum",
@@ -264,6 +265,7 @@ def extract_clusters(
     transform: Affine,
     crs: Any,
     min_area_m2: float = MIN_CLUSTER_AREA_M2,
+    max_area_m2: float = MAX_CLUSTER_AREA_M2,
     detection_date: str = "",
 ) -> gpd.GeoDataFrame:
     """Cluster connected debris pixels into detection objects.
@@ -274,6 +276,8 @@ def extract_clusters(
         transform: Affine geotransform.
         crs: Coordinate reference system.
         min_area_m2: Minimum cluster area in m².
+        max_area_m2: Maximum cluster area in m² — clusters exceeding this are
+            rejected as false positives (cloud shadow, sunglint, etc.).
         detection_date: ISO date string for the detection.
 
     Returns:
@@ -305,6 +309,13 @@ def extract_clusters(
             continue
 
         area_m2 = float(n_pixels * pixel_area_m2)
+
+        if area_m2 > max_area_m2:
+            logger.debug(
+                "Cluster %d rejected: area %.0f m² exceeds max %.0f m²",
+                cluster_id, area_m2, max_area_m2,
+            )
+            continue
         mean_conf = float(debris_prob[cluster_mask].mean())
 
         # Convert cluster mask to polygon
@@ -395,6 +406,7 @@ def run(
         use_tta = model_cfg.get("tta", True)
         det_cfg = config.get("detection", {})
         min_area = det_cfg.get("min_cluster_area_m2", MIN_CLUSTER_AREA_M2)
+        max_area = det_cfg.get("max_cluster_area_m2", MAX_CLUSTER_AREA_M2)
 
     # Check cache
     if stage_output_exists(out_dir, ["detections.geojson"]):
@@ -518,7 +530,7 @@ def run(
     # Extract clusters as GeoJSON
     gdf = extract_clusters(
         debris_mask, debris_prob, scene_transform, scene_crs,
-        min_area_m2=min_area, detection_date=detection_date,
+        min_area_m2=min_area, max_area_m2=max_area, detection_date=detection_date,
     )
 
     geojson_path = out_dir / "detections.geojson"

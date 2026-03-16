@@ -132,7 +132,7 @@ def run_pipeline(
             f"  Skip Stages: {skip_stages or 'none'}",
             style="cyan",
         ))
-    except ImportError:
+    except (ImportError, UnicodeEncodeError, Exception):
         print(f"\n{'='*60}")
         print(f"  Plastic-Ledger Pipeline")
         print(f"  BBox: {bbox}, Target Date: {target_date}")

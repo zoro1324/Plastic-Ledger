@@ -30,6 +30,16 @@ from pipeline.utils.cache_utils import load_config, stage_output_exists
 
 logger = get_logger(__name__)
 
+
+def _load_patch_array(patch_path: Path) -> np.ndarray:
+    """Load a patch array from .npy or .npz file."""
+    if patch_path.suffix == ".npz":
+        with np.load(patch_path) as data:
+            if "patch" in data:
+                return data["patch"]
+            return data[list(data.files)[0]]
+    return np.load(patch_path)
+
 # ─────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────
@@ -240,9 +250,17 @@ def run(
             count = np.zeros((h, w), dtype=np.float32)
 
             for patch_id, info in sorted(patch_index.items()):
-                patch_path = processed_dir / "patches" / f"{patch_id}.npy"
+                patch_file = info.get("patch_file", f"{patch_id}.npy")
+                patch_path = processed_dir / "patches" / patch_file
+                if not patch_path.exists():
+                    npz_fallback = processed_dir / "patches" / f"{patch_id}.npz"
+                    npy_fallback = processed_dir / "patches" / f"{patch_id}.npy"
+                    if npz_fallback.exists():
+                        patch_path = npz_fallback
+                    elif npy_fallback.exists():
+                        patch_path = npy_fallback
                 if patch_path.exists():
-                    patch = np.load(patch_path)
+                    patch = _load_patch_array(patch_path)
                     rs = info["row_start"]
                     cs = info["col_start"]
                     ah = info["actual_h"]

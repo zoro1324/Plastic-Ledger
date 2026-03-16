@@ -9,6 +9,8 @@ model:
 preprocessing:
   patch_size: 256
   overlap: 32
+  patch_storage: npz
+  patch_dtype: float16
   band_means: [0.057, 0.054, 0.046, 0.036, 0.033, 0.041, 0.049, 0.043, 0.050, 0.031, 0.019]
   band_stds:  [0.010, 0.010, 0.013, 0.010, 0.012, 0.020, 0.030, 0.020, 0.030, 0.020, 0.013]
 

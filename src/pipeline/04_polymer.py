@@ -167,7 +167,8 @@ def classify_polymer(indices: Dict[str, float]) -> Tuple[str, bool]:
     fdi = indices["fdi"]
 
     # Organic matter (seaweed, foam) — flag as false positive
-    if nsi > 0.2:
+    # Relaxed to 0.35 to reduce over-filtering; NDI > 0.35 is strong vegetation signal
+    if nsi > 0.35:
         return "Organic Matter", True
 
     # Polyethylene (PE) / Polypropylene (PP) — most common nurdles
@@ -383,7 +384,7 @@ def run(
         if (
             nodata_mask_2d is not None
             and scene_transform is not None
-            and _compute_nodata_fraction(spectral_geom, nodata_mask_2d, scene_transform) > 0.5
+            and _compute_nodata_fraction(spectral_geom, nodata_mask_2d, scene_transform) > 0.7
         ):
             polymer_types.append("No Data Region")
             pi_values.append(0.0)

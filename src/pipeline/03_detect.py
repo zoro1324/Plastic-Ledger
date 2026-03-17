@@ -25,7 +25,7 @@ import torch
 import torch.nn.functional as F
 import rasterio
 from rasterio.transform import Affine
-from scipy.ndimage import label as ndimage_label
+from scipy.ndimage import label as ndimage_label, find_objects as ndimage_find_objects
 import geopandas as gpd
 from shapely.geometry import shape, mapping, Polygon, MultiPolygon
 import segmentation_models_pytorch as smp
@@ -294,6 +294,7 @@ def extract_clusters(
         )
 
     labeled, num_features = ndimage_label(debris_mask.astype(np.int32))
+    component_slices = ndimage_find_objects(labeled)
     logger.info("Found %d raw connected components", num_features)
 
     # Pixel resolution in meters (approximate from transform)
@@ -301,9 +302,20 @@ def extract_clusters(
     min_pixels = max(1, int(min_area_m2 / pixel_area_m2))
 
     clusters = []
-    for cluster_id in range(1, num_features + 1):
-        cluster_mask = (labeled == cluster_id)
-        n_pixels = cluster_mask.sum()
+    wgs84_projector = None
+    if crs and str(crs) != "EPSG:4326":
+        import pyproj
+        wgs84_projector = pyproj.Transformer.from_crs(
+            crs, "EPSG:4326", always_xy=True,
+        ).transform
+
+    for cluster_id, cluster_slice in enumerate(component_slices, start=1):
+        if cluster_slice is None:
+            continue
+
+        local_labels = labeled[cluster_slice]
+        local_mask = (local_labels == cluster_id)
+        n_pixels = int(local_mask.sum())
 
         if n_pixels < min_pixels:
             continue
@@ -316,27 +328,26 @@ def extract_clusters(
                 cluster_id, area_m2, max_area_m2,
             )
             continue
-        mean_conf = float(debris_prob[cluster_mask].mean())
+        mean_conf = float(debris_prob[cluster_slice][local_mask].mean())
 
-        # Convert cluster mask to polygon
+        # Convert only the local component window to polygons.
+        local_transform = transform * Affine.translation(
+            cluster_slice[1].start, cluster_slice[0].start,
+        )
         gdf = array_to_polygons(
-            cluster_mask.astype(np.uint8), transform, crs,
+            local_mask.astype(np.uint8), local_transform, crs,
         )
         if gdf.empty:
             continue
 
         # Merge all polygons for this cluster
-        merged_geom = gdf.unary_union
+        merged_geom = gdf.geometry.union_all()
         centroid = merged_geom.centroid
 
         # Re-project centroid to lon/lat if needed
-        if crs and str(crs) != "EPSG:4326":
-            import pyproj
+        if wgs84_projector is not None:
             from shapely.ops import transform as shp_transform
-            project = pyproj.Transformer.from_crs(
-                crs, "EPSG:4326", always_xy=True,
-            ).transform
-            centroid_lonlat = shp_transform(project, centroid)
+            centroid_lonlat = shp_transform(wgs84_projector, centroid)
         else:
             centroid_lonlat = centroid
 
@@ -349,6 +360,14 @@ def extract_clusters(
             "detection_date": detection_date,
             "cluster_id": len(clusters),
         })
+
+        if cluster_id % 200 == 0 or cluster_id == num_features:
+            logger.info(
+                "  Processed %d/%d components (%d retained)",
+                cluster_id,
+                num_features,
+                len(clusters),
+            )
 
     if not clusters:
         logger.info("No clusters above minimum area (%d m²)", min_area_m2)

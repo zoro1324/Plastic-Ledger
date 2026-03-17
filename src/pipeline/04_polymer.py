@@ -372,6 +372,7 @@ def run(
     is_false_positives = []
 
     n_nodata = 0
+    total_clusters = len(gdf)
     for idx, row in gdf.iterrows():
         spectral_geom = gdf_for_spectra.geometry.iloc[idx]
 
@@ -416,6 +417,14 @@ def run(
         fdi_values.append(indices["fdi"])
         is_false_positives.append(is_fp)
 
+        if (idx + 1) % 200 == 0 or idx == total_clusters - 1:
+            logger.info(
+                "  Processed %d/%d clusters (%d nodata)",
+                idx + 1,
+                total_clusters,
+                n_nodata,
+            )
+
     gdf["polymer_type"] = polymer_types
     gdf["pi_value"] = pi_values
     gdf["sr_value"] = sr_values
@@ -433,6 +442,10 @@ def run(
         "[bold green]Stage 4 complete[/] — %d clusters classified, %d false positives (%d nodata regions)",
         len(gdf), n_fp, n_nodata,
     )
+    if n_nodata == len(gdf) and len(gdf) > 0:
+        logger.warning(
+            "All Stage 3 detections were flagged as 'No Data Region'; downstream source regions may be empty"
+        )
     for ptype, cnt in counts.items():
         logger.info("  %s: %d", ptype, cnt)
 

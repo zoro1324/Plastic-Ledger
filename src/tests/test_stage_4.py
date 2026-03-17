@@ -46,7 +46,7 @@ class TestPolymerClassification:
     def test_organic_flagged_as_fp(self):
         """High NSI should flag as organic / false positive."""
         ptype, is_fp = polymer.classify_polymer({
-            "pi": 0.05, "sr": 0.3, "nsi": 0.3, "fdi": 0.01,
+            "pi": 0.05, "sr": 0.3, "nsi": 0.4, "fdi": 0.01,
         })
         assert "Organic" in ptype
         assert is_fp

@@ -557,6 +557,16 @@ def run(
         except Exception as exc:
             logger.warning("Could not load detections: %s", exc)
 
+    # Ensure geometry is in EPSG:4326 and recompute centroid lat/lon from
+    # the projected geometry so the report always shows geographic coordinates.
+    if not detections_gdf.empty:
+        if detections_gdf.crs and str(detections_gdf.crs) != "EPSG:4326":
+            detections_gdf = detections_gdf.to_crs("EPSG:4326")
+        if "geometry" in detections_gdf.columns and detections_gdf.geometry.notna().any():
+            centroids = detections_gdf.geometry.centroid
+            detections_gdf["centroid_lon"] = centroids.x
+            detections_gdf["centroid_lat"] = centroids.y
+
     attribution_data = []
     if attribution_path.exists():
         try:

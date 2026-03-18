@@ -1,5 +1,52 @@
 import { motion, useInView } from "framer-motion";
-import { useRef } from "react";
+import Spline from "@splinetool/react-spline";
+import { useEffect, useRef, useState } from "react";
+
+export function SplineIngestionVisual() {
+  const ref = useRef<HTMLDivElement>(null);
+  const isInView = useInView(ref, { once: false, margin: "-20%" });
+  const [shouldRenderSpline, setShouldRenderSpline] = useState(false);
+
+  useEffect(() => {
+    if (isInView) {
+      setShouldRenderSpline(true);
+    }
+  }, [isInView]);
+
+  return (
+    <div ref={ref} className="glass rounded-2xl box-glow w-full h-full overflow-hidden relative">
+      <motion.div
+        className="absolute inset-0 bg-[radial-gradient(circle_at_30%_30%,hsl(var(--primary)/0.2),transparent_60%)]"
+        initial={{ opacity: 0 }}
+        animate={isInView ? { opacity: 1 } : { opacity: 0 }}
+        transition={{ duration: 0.8 }}
+      />
+
+      <motion.div
+        className="relative z-10 w-full h-full min-h-[380px] sm:min-h-[420px] p-3 sm:p-4"
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.96 }}
+        transition={{ duration: 0.9, ease: "easeOut" }}
+      >
+        <div className="w-full h-full rounded-xl overflow-hidden bg-[#070d1f]/80 flex items-center justify-center">
+          {shouldRenderSpline ? (
+            <div className="w-full h-full [transform:scale(0.9)] [transform-origin:center_center]">
+              <Spline scene="https://prod.spline.design/CiRL7KnwRkcw-gf6/scene.splinecode" />
+            </div>
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <span className="text-xs font-mono text-muted-foreground">Loading 3D scene...</span>
+            </div>
+          )}
+        </div>
+      </motion.div>
+
+      <div className="absolute bottom-3 left-3 right-3 rounded-lg border border-primary/15 bg-background/30 backdrop-blur px-3 py-2">
+        <p className="text-[10px] font-mono text-primary/80">Centered full-frame Spline visual</p>
+      </div>
+    </div>
+  );
+}
 
 export function SatelliteBands() {
   const ref = useRef<HTMLDivElement>(null);

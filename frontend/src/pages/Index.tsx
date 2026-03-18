@@ -3,7 +3,7 @@ import HeroSection from "@/components/landing/HeroSection";
 import InputSection from "@/components/landing/InputSection";
 import PipelineStage from "@/components/landing/PipelineStage";
 import {
-  SatelliteBands,
+  SplineIngestionVisual,
   PatchGrid,
   DebrisHeatmap,
   SpectralIndices,
@@ -26,7 +26,8 @@ const stages = [
     ],
     outputs: "data/raw/<SCENE_ID>/{B02,B04,B08...}.tif + metadata.json",
     icon: <Satellite className="w-20 h-20" />,
-    Visual: SatelliteBands,
+    Visual: SplineIngestionVisual,
+    visualClassName: "max-w-lg xl:max-w-xl aspect-[1.08/1]",
   },
   {
     stageNumber: 2,
@@ -189,6 +190,7 @@ export default function Index() {
           bullets={stage.bullets}
           outputs={stage.outputs}
           icon={stage.icon}
+          visualClassName={stage.visualClassName}
         >
           <stage.Visual />
         </PipelineStage>

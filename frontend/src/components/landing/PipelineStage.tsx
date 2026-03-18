@@ -1,5 +1,6 @@
 import { useRef } from "react";
-import { motion, useInView } from "framer-motion";
+import { motion, useInView, useScroll, useTransform } from "framer-motion";
+import { cn } from "@/lib/utils";
 
 interface PipelineStageProps {
   stageNumber: number;
@@ -9,6 +10,7 @@ interface PipelineStageProps {
   outputs: string;
   icon: React.ReactNode;
   accentColor?: string;
+  visualClassName?: string;
   children?: React.ReactNode;
 }
 
@@ -19,10 +21,22 @@ export default function PipelineStage({
   bullets,
   outputs,
   icon,
+  visualClassName,
   children,
 }: PipelineStageProps) {
   const ref = useRef<HTMLDivElement>(null);
   const isInView = useInView(ref, { once: false, margin: "-20%" });
+  const { scrollYProgress } = useScroll({
+    target: ref,
+    offset: ["start end", "end start"],
+  });
+
+  const visualX = useTransform(scrollYProgress, [0, 0.2, 0.5, 0.82, 1], [-140, 0, 0, -40, -200]);
+  const visualOpacity = useTransform(scrollYProgress, [0, 0.14, 0.82, 1], [0, 1, 1, 0]);
+  const visualScale = useTransform(scrollYProgress, [0, 0.2, 0.8, 1], [0.92, 1, 1, 0.94]);
+
+  const textX = useTransform(scrollYProgress, [0, 0.2, 0.5, 0.82, 1], [80, 0, 0, 20, 90]);
+  const textOpacity = useTransform(scrollYProgress, [0, 0.16, 0.88, 1], [0, 1, 1, 0]);
 
   return (
     <section
@@ -42,11 +56,9 @@ export default function PipelineStage({
         {/* Visual side */}
         <motion.div
           className="relative flex items-center justify-center"
-          initial={{ opacity: 0, x: -60 }}
-          animate={isInView ? { opacity: 1, x: 0 } : { opacity: 0, x: -60 }}
-          transition={{ duration: 0.8, ease: "easeOut" }}
+          style={{ x: visualX, opacity: visualOpacity, scale: visualScale }}
         >
-          <div className="relative w-full max-w-md aspect-square">
+          <div className={cn("relative w-full max-w-md aspect-square", visualClassName)}>
             {/* Glow background */}
             <div className="absolute inset-0 rounded-2xl bg-primary/5 blur-3xl" />
             {/* Icon / Visual */}
@@ -63,9 +75,7 @@ export default function PipelineStage({
         {/* Text side */}
         <motion.div
           className="space-y-6"
-          initial={{ opacity: 0, x: 60 }}
-          animate={isInView ? { opacity: 1, x: 0 } : { opacity: 0, x: 60 }}
-          transition={{ duration: 0.8, delay: 0.2, ease: "easeOut" }}
+          style={{ x: textX, opacity: textOpacity }}
         >
           {/* Stage badge */}
           <motion.div

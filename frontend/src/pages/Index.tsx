@@ -5,10 +5,10 @@ import PipelineStage from "@/components/landing/PipelineStage";
 import {
   SplineIngestionVisual,
   SplinePreprocessBackgroundVisual,
-  DebrisHeatmap,
+  SplineDetectionRobotVisual,
+  SplineBacktrackBackgroundVisual,
+  SplineAttributionBackgroundVisual,
   SpectralIndices,
-  BacktrackParticles,
-  AttributionScores,
   ReportOutput,
 } from "@/components/landing/StageVisuals";
 import { motion, useInView } from "framer-motion";
@@ -55,7 +55,8 @@ const stages = [
     ],
     outputs: "detections.geojson + debris_mask.tif + debris_prob.tif",
     icon: <Brain className="w-20 h-20" />,
-    Visual: DebrisHeatmap,
+    Visual: SplineDetectionRobotVisual,
+    disableVisualGlow: true,
   },
   {
     stageNumber: 4,
@@ -81,7 +82,11 @@ const stages = [
     ],
     outputs: "backtrack_summary.json + trajectory GeoJSONs",
     icon: <Navigation className="w-20 h-20" />,
-    Visual: BacktrackParticles,
+    Visual: SplineBacktrackBackgroundVisual,
+    layoutMode: "background",
+    backgroundInteractive: true,
+    backgroundTextGlass: true,
+    backgroundTextDark: true,
   },
   {
     stageNumber: 6,
@@ -95,7 +100,11 @@ const stages = [
     ],
     outputs: "attribution_report.json",
     icon: <Target className="w-20 h-20" />,
-    Visual: AttributionScores,
+    Visual: SplineAttributionBackgroundVisual,
+    layoutMode: "background",
+    backgroundInteractive: false,
+    backgroundTextGlass: true,
+    backgroundTextHighContrast: true,
   },
   {
     stageNumber: 7,
@@ -193,9 +202,13 @@ export default function Index() {
           outputs={stage.outputs}
           icon={stage.icon}
           visualClassName={stage.visualClassName}
+          disableVisualGlow={stage.disableVisualGlow}
           reverseLayout={stage.reverseLayout}
           layoutMode={stage.layoutMode}
           backgroundInteractive={stage.backgroundInteractive}
+          backgroundTextGlass={stage.backgroundTextGlass}
+          backgroundTextDark={stage.backgroundTextDark}
+          backgroundTextHighContrast={stage.backgroundTextHighContrast}
         >
           <stage.Visual />
         </PipelineStage>

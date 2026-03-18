@@ -11,9 +11,13 @@ interface PipelineStageProps {
   icon: React.ReactNode;
   accentColor?: string;
   visualClassName?: string;
+  disableVisualGlow?: boolean;
   reverseLayout?: boolean;
   layoutMode?: "split" | "background";
   backgroundInteractive?: boolean;
+  backgroundTextGlass?: boolean;
+  backgroundTextDark?: boolean;
+  backgroundTextHighContrast?: boolean;
   children?: React.ReactNode;
 }
 
@@ -25,9 +29,13 @@ export default function PipelineStage({
   outputs,
   icon,
   visualClassName,
+  disableVisualGlow = false,
   reverseLayout = false,
   layoutMode = "split",
   backgroundInteractive = false,
+  backgroundTextGlass = false,
+  backgroundTextDark = false,
+  backgroundTextHighContrast = false,
   children,
 }: PipelineStageProps) {
   const ref = useRef<HTMLDivElement>(null);
@@ -89,44 +97,93 @@ export default function PipelineStage({
           </motion.div>
 
           <div className="relative z-10 max-w-4xl w-full mx-auto px-2 pointer-events-none">
-            <motion.div className="space-y-6 text-center" style={{ opacity: textOpacity, y: textYBackground }}>
+            <motion.div
+              className={cn(
+                "space-y-6 text-center",
+                backgroundTextGlass &&
+                  "rounded-2xl p-6 md:p-8 bg-background/8 backdrop-blur-lg border border-foreground/10 shadow-[0_14px_50px_hsl(var(--foreground)/0.08)]",
+              )}
+              style={{ opacity: textOpacity, y: textYBackground }}
+            >
               {/* Stage badge */}
               <motion.div
-                className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full glass text-sm font-heading text-primary"
+                className={cn(
+                  "inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-sm font-heading",
+                  backgroundTextDark
+                    ? "bg-black/20 border border-black/20 text-slate-900"
+                    : "glass text-primary",
+                )}
                 initial={{ opacity: 0, y: 20 }}
                 animate={isInView ? { opacity: 1, y: 0 } : { opacity: 0, y: 20 }}
                 transition={{ duration: 0.5, delay: 0.3 }}
               >
-                <span className="w-2 h-2 rounded-full bg-primary animate-pulse-glow" />
+                <span
+                  className={cn(
+                    "w-2 h-2 rounded-full",
+                    backgroundTextDark ? "bg-slate-900" : "bg-primary animate-pulse-glow",
+                  )}
+                />
                 STAGE {stageNumber}
               </motion.div>
 
-              <h2 className="text-3xl md:text-5xl font-heading font-bold text-foreground">{title}</h2>
+              <h2
+                className={cn(
+                  "text-3xl md:text-5xl font-heading font-bold",
+                  backgroundTextDark ? "text-slate-900" : "text-foreground",
+                )}
+              >
+                {title}
+              </h2>
 
-              <p className="text-sm font-mono text-muted-foreground">{fileName}</p>
+              <p
+                className={cn(
+                  "text-sm font-mono",
+                  backgroundTextDark ? "text-slate-700" : "text-muted-foreground",
+                  backgroundTextHighContrast && !backgroundTextDark && "text-foreground/85",
+                )}
+              >
+                {fileName}
+              </p>
 
               <ul className="space-y-3 max-w-3xl mx-auto">
                 {bullets.map((bullet, i) => (
                   <motion.li
                     key={i}
-                    className="flex items-center justify-center gap-3 text-muted-foreground"
+                    className={cn(
+                      "flex items-center justify-center gap-3",
+                      backgroundTextDark ? "text-slate-800" : "text-muted-foreground",
+                      backgroundTextHighContrast && !backgroundTextDark && "text-foreground/90",
+                    )}
                     initial={{ opacity: 0, y: 12 }}
                     animate={isInView ? { opacity: 1, y: 0 } : { opacity: 0, y: 12 }}
                     transition={{ duration: 0.5, delay: 0.4 + i * 0.1 }}
                   >
-                    <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+                    <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", backgroundTextDark ? "bg-slate-900" : "bg-primary")} />
                     <span>{bullet}</span>
                   </motion.li>
                 ))}
               </ul>
 
               <motion.div
-                className="glass rounded-lg p-4 font-mono text-xs text-primary/80 max-w-2xl mx-auto"
+                className={cn(
+                  "rounded-lg p-4 font-mono text-xs max-w-2xl mx-auto",
+                  backgroundTextDark
+                    ? "bg-black/15 border border-black/20 text-slate-900"
+                    : "glass text-primary/80",
+                  backgroundTextHighContrast && !backgroundTextDark && "text-foreground",
+                )}
                 initial={{ opacity: 0, y: 20 }}
                 animate={isInView ? { opacity: 1, y: 0 } : { opacity: 0, y: 20 }}
                 transition={{ duration: 0.5, delay: 0.7 }}
               >
-                <span className="text-muted-foreground">Output → </span>
+                <span
+                  className={cn(
+                    backgroundTextDark ? "text-slate-700" : "text-muted-foreground",
+                    backgroundTextHighContrast && !backgroundTextDark && "text-foreground/80",
+                  )}
+                >
+                  Output →
+                </span>{" "}
                 {outputs}
               </motion.div>
             </motion.div>
@@ -144,7 +201,7 @@ export default function PipelineStage({
           >
             <div className={cn("relative w-full max-w-md aspect-square", visualClassName)}>
               {/* Glow background */}
-              <div className="absolute inset-0 rounded-2xl bg-primary/5 blur-3xl" />
+              {!disableVisualGlow && <div className="absolute inset-0 rounded-2xl bg-primary/5 blur-3xl" />}
               {/* Icon / Visual */}
               <div className="relative z-10 w-full h-full flex items-center justify-center">
                 {children || (

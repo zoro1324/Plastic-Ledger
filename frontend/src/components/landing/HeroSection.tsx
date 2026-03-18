@@ -2,7 +2,7 @@ import { motion } from "framer-motion";
 import { Suspense, lazy } from "react";
 import { ChevronDown } from "lucide-react";
 
-const Globe = lazy(() => import("./Globe"));
+const SplineGlobe = lazy(() => import("./SplineGlobe"));
 
 export default function HeroSection() {
   const scrollToContent = () => {
@@ -11,16 +11,16 @@ export default function HeroSection() {
 
   return (
     <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
-      {/* 3D Globe background */}
+      {/* Spline globe background */}
       <Suspense fallback={<div className="absolute inset-0 bg-background" />}>
-        <Globe />
+        <SplineGlobe />
       </Suspense>
 
       {/* Gradient overlay */}
-      <div className="absolute inset-0 bg-gradient-to-b from-background/30 via-background/60 to-background z-10" />
+      <div className="absolute inset-0 bg-gradient-to-b from-background/30 via-background/60 to-background z-10 pointer-events-none" />
 
       {/* Content */}
-      <div className="relative z-20 text-center px-6 space-y-8">
+      <div className="relative z-20 text-center px-6 space-y-8 pointer-events-none">
         <motion.div
           initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
@@ -51,7 +51,7 @@ export default function HeroSection() {
         <motion.button
           onClick={scrollToContent}
           className="group inline-flex items-center gap-2 px-8 py-3 rounded-full bg-primary text-primary-foreground font-heading font-semibold text-sm
-                     hover:shadow-[0_0_30px_hsl(166,72%,51%,0.4)] transition-shadow duration-300"
+                     hover:shadow-[0_0_30px_hsl(166,72%,51%,0.4)] transition-shadow duration-300 pointer-events-auto"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.6, duration: 0.6 }}

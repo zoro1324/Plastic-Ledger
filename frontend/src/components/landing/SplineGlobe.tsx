@@ -34,6 +34,38 @@ export default function SplineGlobe() {
   useEffect(() => {
     if (!canvasRef.current) return;
 
+    const canvas = canvasRef.current;
+
+    const forwardWheelToPageScroll = (event: WheelEvent) => {
+      event.preventDefault();
+      window.scrollBy({ top: event.deltaY, left: 0, behavior: "auto" });
+    };
+
+    let lastTouchY: number | null = null;
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length > 0) {
+        lastTouchY = event.touches[0].clientY;
+      }
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (event.touches.length === 0 || lastTouchY === null) return;
+      const currentY = event.touches[0].clientY;
+      const deltaY = lastTouchY - currentY;
+      lastTouchY = currentY;
+      event.preventDefault();
+      window.scrollBy({ top: deltaY, left: 0, behavior: "auto" });
+    };
+
+    const onTouchEnd = () => {
+      lastTouchY = null;
+    };
+
+    canvas.addEventListener("wheel", forwardWheelToPageScroll, { passive: false });
+    canvas.addEventListener("touchstart", onTouchStart, { passive: true });
+    canvas.addEventListener("touchmove", onTouchMove, { passive: false });
+    canvas.addEventListener("touchend", onTouchEnd, { passive: true });
+
     const app = new Application(canvasRef.current);
     void app.load(SPLINE_SCENE_URL).then(() => {
       const runtime = app as Application & {
@@ -51,6 +83,11 @@ export default function SplineGlobe() {
     });
 
     return () => {
+      canvas.removeEventListener("wheel", forwardWheelToPageScroll);
+      canvas.removeEventListener("touchstart", onTouchStart);
+      canvas.removeEventListener("touchmove", onTouchMove);
+      canvas.removeEventListener("touchend", onTouchEnd);
+
       const disposable = app as Application & { dispose?: () => void };
       if (typeof disposable.dispose === "function") {
         disposable.dispose();
@@ -60,8 +97,12 @@ export default function SplineGlobe() {
 
   return (
     <div className="absolute inset-0 z-0 overflow-hidden" aria-hidden="true">
-      <div className="absolute left-1/2 top-1/2 h-[340vh] w-[240vw] -translate-x-[60%] -translate-y-1/2 md:h-[270vh] md:w-[270vw] md:-translate-x-[57%] lg:h-[300vh] lg:w-[300vw] lg:-translate-x-[56%]">
-        <canvas ref={canvasRef} className="h-full w-full" />
+      <div className="absolute left-1/2 top-1/2 h-[340vh] w-[240vw] -translate-x-[60%] -translate-y-1/2 md:h-[270vh] md:w-[270vw] md:-translate-x-[57%] lg:h-[300vh] lg:w-[300vw] lg:-translate-x-[58%]">
+        <canvas
+          ref={canvasRef}
+          className="h-full w-full"
+          style={{ transform: "scale(1.5)", transformOrigin: "center center", filter: "brightness(2)" }}
+        />
       </div>
     </div>
   );

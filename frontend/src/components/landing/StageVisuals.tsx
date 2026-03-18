@@ -110,7 +110,7 @@ export function SplinePreprocessBackgroundVisual() {
         transition={{ duration: 0.9, ease: "easeOut" }}
       >
         {shouldRenderSpline ? (
-          <div className="w-full h-full [transform:scale(1.01)] [transform-origin:center_center]">
+          <div className="w-full h-full [transform:scale(3)] [transform-origin:center_center]">
             <Spline scene="https://prod.spline.design/mluotX0vhaRMyBAS/scene.splinecode" />
           </div>
         ) : (

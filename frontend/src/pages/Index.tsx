@@ -1,6 +1,5 @@
 import { Satellite, Layers, Brain, FlaskConical, Navigation, Target, FileText } from "lucide-react";
 import HeroSection from "@/components/landing/HeroSection";
-import InputSection from "@/components/landing/InputSection";
 import PipelineStage from "@/components/landing/PipelineStage";
 import {
   SplineIngestionVisual,
@@ -14,7 +13,25 @@ import {
 import { motion, useInView } from "framer-motion";
 import { useRef } from "react";
 
-const stages = [
+type PipelineStageData = {
+  stageNumber: number;
+  title: string;
+  fileName: string;
+  bullets: string[];
+  outputs: string;
+  icon: React.ReactNode;
+  Visual: React.ElementType;
+  visualClassName?: string;
+  disableVisualGlow?: boolean;
+  reverseLayout?: boolean;
+  layoutMode?: "split" | "background";
+  backgroundInteractive?: boolean;
+  backgroundTextGlass?: boolean;
+  backgroundTextDark?: boolean;
+  backgroundTextHighContrast?: boolean;
+};
+
+const stages: PipelineStageData[] = [
   {
     stageNumber: 1,
     title: "Satellite Data Ingestion",
@@ -27,7 +44,9 @@ const stages = [
     outputs: "data/raw/<SCENE_ID>/{B02,B04,B08...}.tif + metadata.json",
     icon: <Satellite className="w-20 h-20" />,
     Visual: SplineIngestionVisual,
-    visualClassName: "max-w-lg xl:max-w-xl aspect-[1.08/1]",
+    layoutMode: "background",
+    backgroundInteractive: true,
+    backgroundTextGlass: true,
   },
   {
     stageNumber: 2,
@@ -43,6 +62,7 @@ const stages = [
     Visual: SplinePreprocessBackgroundVisual,
     layoutMode: "background",
     backgroundInteractive: true,
+    backgroundTextGlass: true,
   },
   {
     stageNumber: 3,
@@ -70,6 +90,9 @@ const stages = [
     outputs: "detections_classified.geojson",
     icon: <FlaskConical className="w-20 h-20" />,
     Visual: SpectralIndices,
+    layoutMode: "background",
+    backgroundInteractive: true,
+    backgroundTextHighContrast: true,
   },
   {
     stageNumber: 5,
@@ -118,74 +141,19 @@ const stages = [
     outputs: "final_report.pdf + final_report.geojson + debris_summary.csv",
     icon: <FileText className="w-20 h-20" />,
     Visual: ReportOutput,
+    layoutMode: "background",
+    backgroundInteractive: true,
+    backgroundTextGlass: true,
+    backgroundTextHighContrast: true,
   },
 ];
 
-function FooterCTA() {
-  const ref = useRef<HTMLDivElement>(null);
-  const isInView = useInView(ref, { once: false, margin: "-20%" });
 
-  return (
-    <section ref={ref} className="relative min-h-[60vh] flex items-center justify-center px-6 py-20">
-      <div className="absolute inset-0 bg-gradient-to-t from-primary/5 to-transparent" />
-      <motion.div
-        className="relative z-10 text-center space-y-6 max-w-2xl"
-        initial={{ opacity: 0, y: 30 }}
-        animate={isInView ? { opacity: 1, y: 0 } : { opacity: 0, y: 30 }}
-        transition={{ duration: 0.8 }}
-      >
-        <h2 className="text-4xl md:text-5xl font-heading font-bold text-foreground">
-          Pipeline Complete
-        </h2>
-        <p className="text-muted-foreground text-lg">
-          From satellite imagery to actionable intelligence — all outputs ready in your dashboard.
-        </p>
-        <div className="flex flex-col sm:flex-row gap-4 justify-center">
-          <motion.a
-            href="#"
-            className="inline-flex items-center justify-center gap-2 px-8 py-3 rounded-full bg-primary text-primary-foreground font-heading font-semibold text-sm
-                       hover:shadow-[0_0_30px_hsl(166,72%,51%,0.4)] transition-shadow duration-300"
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.98 }}
-          >
-            Go to Dashboard →
-          </motion.a>
-          <motion.a
-            href="#"
-            className="inline-flex items-center justify-center gap-2 px-8 py-3 rounded-full glass text-foreground font-heading font-semibold text-sm
-                       hover:border-primary/50 transition-colors duration-300"
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.98 }}
-          >
-            View Documentation
-          </motion.a>
-        </div>
-
-        {/* Output file tree */}
-        <motion.div
-          className="glass rounded-xl p-4 max-w-xs mx-auto text-left font-mono text-xs text-muted-foreground mt-8"
-          initial={{ opacity: 0 }}
-          animate={isInView ? { opacity: 1 } : { opacity: 0 }}
-          transition={{ delay: 0.5 }}
-        >
-          <div className="text-primary mb-2">data/reports/&lt;SCENE&gt;/</div>
-          <div className="pl-4 space-y-1">
-            <div>├── final_report.pdf</div>
-            <div>├── final_report.geojson</div>
-            <div>├── debris_summary.csv</div>
-            <div>└── run_summary.json</div>
-          </div>
-        </motion.div>
-      </motion.div>
-    </section>
-  );
-}
 
 export default function Index() {
   return (
     <main className="bg-background min-h-screen overflow-x-hidden">
       <HeroSection />
-      <InputSection />
 
       {/* Pipeline vertical connector */}
       <div className="flex justify-center">
@@ -214,7 +182,7 @@ export default function Index() {
         </PipelineStage>
       ))}
 
-      <FooterCTA />
+
 
       {/* Footer */}
       <footer className="border-t border-border py-8 px-6 text-center">

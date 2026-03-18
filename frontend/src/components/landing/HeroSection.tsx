@@ -11,6 +11,24 @@ export default function HeroSection() {
 
   return (
     <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
+      {/* Top Right Dashboard Button */}
+      <motion.div 
+        className="absolute top-6 right-6 lg:top-8 lg:right-10 z-50 pointer-events-auto"
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.8, duration: 0.6 }}
+      >
+        <motion.a
+          href="#"
+          className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-full bg-primary text-primary-foreground font-heading font-semibold text-sm
+                     hover:shadow-[0_0_30px_hsl(166,72%,51%,0.4)] transition-shadow duration-300"
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.98 }}
+        >
+          Go to Dashboard →
+        </motion.a>
+      </motion.div>
+
       {/* Spline globe background */}
       <Suspense fallback={<div className="absolute inset-0 bg-background" />}>
         <SplineGlobe />

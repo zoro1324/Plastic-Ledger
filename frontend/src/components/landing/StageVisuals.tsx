@@ -48,6 +48,82 @@ export function SplineIngestionVisual() {
   );
 }
 
+export function SplinePreprocessVisual() {
+  const ref = useRef<HTMLDivElement>(null);
+  const isInView = useInView(ref, { once: false, margin: "-20%" });
+  const [shouldRenderSpline, setShouldRenderSpline] = useState(false);
+
+  useEffect(() => {
+    if (isInView) {
+      setShouldRenderSpline(true);
+    }
+  }, [isInView]);
+
+  return (
+    <div ref={ref} className="glass rounded-2xl box-glow w-full h-full overflow-hidden relative">
+      <motion.div
+        className="absolute inset-0 bg-[radial-gradient(circle_at_65%_35%,hsl(var(--secondary)/0.18),transparent_62%)]"
+        initial={{ opacity: 0 }}
+        animate={isInView ? { opacity: 1 } : { opacity: 0 }}
+        transition={{ duration: 0.8 }}
+      />
+
+      <motion.div
+        className="relative z-10 w-full h-full min-h-[360px] sm:min-h-[410px] p-3 sm:p-4"
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.96 }}
+        transition={{ duration: 0.9, ease: "easeOut" }}
+      >
+        <div className="w-full h-full rounded-xl overflow-hidden bg-[#060b19]/85 flex items-center justify-center">
+          {shouldRenderSpline ? (
+            <div className="w-full h-full [transform:scale(0.9)] [transform-origin:center_center]">
+              <Spline scene="https://prod.spline.design/mluotX0vhaRMyBAS/scene.splinecode" />
+            </div>
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <span className="text-xs font-mono text-muted-foreground">Loading 3D scene...</span>
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+export function SplinePreprocessBackgroundVisual() {
+  const ref = useRef<HTMLDivElement>(null);
+  const isInView = useInView(ref, { once: false, margin: "-20%" });
+  const [shouldRenderSpline, setShouldRenderSpline] = useState(false);
+
+  useEffect(() => {
+    if (isInView) {
+      setShouldRenderSpline(true);
+    }
+  }, [isInView]);
+
+  return (
+    <div ref={ref} className="w-full h-full relative overflow-hidden">
+      <motion.div
+        className="absolute inset-0 overflow-hidden pointer-events-auto z-0"
+        initial={{ opacity: 0, scale: 1.03 }}
+        animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 1.03 }}
+        transition={{ duration: 0.9, ease: "easeOut" }}
+      >
+        {shouldRenderSpline ? (
+          <div className="w-full h-full [transform:scale(1.01)] [transform-origin:center_center]">
+            <Spline scene="https://prod.spline.design/mluotX0vhaRMyBAS/scene.splinecode" />
+          </div>
+        ) : (
+          <div className="w-full h-full bg-[#070a16]" />
+        )}
+      </motion.div>
+
+      <div className="absolute inset-0 pointer-events-none z-10 bg-[radial-gradient(circle_at_50%_40%,hsl(var(--secondary)/0.16),transparent_70%)]" />
+      <div className="absolute inset-0 pointer-events-none z-10 bg-gradient-to-b from-background/5 via-background/10 to-background/25" />
+    </div>
+  );
+}
+
 export function SatelliteBands() {
   const ref = useRef<HTMLDivElement>(null);
   const isInView = useInView(ref, { once: false, margin: "-20%" });

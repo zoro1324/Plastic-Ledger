@@ -4,7 +4,7 @@ import InputSection from "@/components/landing/InputSection";
 import PipelineStage from "@/components/landing/PipelineStage";
 import {
   SplineIngestionVisual,
-  PatchGrid,
+  SplinePreprocessBackgroundVisual,
   DebrisHeatmap,
   SpectralIndices,
   BacktrackParticles,
@@ -40,7 +40,9 @@ const stages = [
     ],
     outputs: "data/processed/<SCENE>/patches/patch_NNNN.npz",
     icon: <Layers className="w-20 h-20" />,
-    Visual: PatchGrid,
+    Visual: SplinePreprocessBackgroundVisual,
+    layoutMode: "background",
+    backgroundInteractive: true,
   },
   {
     stageNumber: 3,
@@ -191,6 +193,9 @@ export default function Index() {
           outputs={stage.outputs}
           icon={stage.icon}
           visualClassName={stage.visualClassName}
+          reverseLayout={stage.reverseLayout}
+          layoutMode={stage.layoutMode}
+          backgroundInteractive={stage.backgroundInteractive}
         >
           <stage.Visual />
         </PipelineStage>

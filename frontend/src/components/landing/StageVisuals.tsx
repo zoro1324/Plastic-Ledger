@@ -14,36 +14,25 @@ export function SplineIngestionVisual() {
   }, [isInView]);
 
   return (
-    <div ref={ref} className="glass rounded-2xl box-glow w-full h-full overflow-hidden relative">
+    <div ref={ref} className="w-full h-full relative overflow-hidden">
       <motion.div
-        className="absolute inset-0 bg-[radial-gradient(circle_at_30%_30%,hsl(var(--primary)/0.2),transparent_60%)]"
-        initial={{ opacity: 0 }}
-        animate={isInView ? { opacity: 1 } : { opacity: 0 }}
-        transition={{ duration: 0.8 }}
-      />
-
-      <motion.div
-        className="relative z-10 w-full h-full min-h-[380px] sm:min-h-[420px] p-3 sm:p-4"
-        initial={{ opacity: 0, scale: 0.96 }}
-        animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.96 }}
+        className="absolute inset-0 overflow-hidden pointer-events-auto z-0"
+        initial={{ opacity: 0, scale: 1.03 }}
+        animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 1.03 }}
         transition={{ duration: 0.9, ease: "easeOut" }}
       >
-        <div className="w-full h-full rounded-xl overflow-hidden bg-[#070d1f]/80 flex items-center justify-center">
-          {shouldRenderSpline ? (
-            <div className="w-full h-full [transform:scale(0.9)] [transform-origin:center_center]">
-              <Spline scene="https://prod.spline.design/CiRL7KnwRkcw-gf6/scene.splinecode" />
-            </div>
-          ) : (
-            <div className="w-full h-full flex items-center justify-center">
-              <span className="text-xs font-mono text-muted-foreground">Loading 3D scene...</span>
-            </div>
-          )}
-        </div>
+        {shouldRenderSpline ? (
+          <div className="w-full h-full [transform:scale(1.2)] [transform-origin:center_center]">
+            {/* Using mix-blend-screen in case the Spline scene has a hardcoded dark background natively */}
+            <Spline style={{ mixBlendMode: 'screen', backgroundColor: 'transparent' }} scene="https://prod.spline.design/CiRL7KnwRkcw-gf6/scene.splinecode" />
+          </div>
+        ) : (
+          <div className="w-full h-full" />
+        )}
       </motion.div>
 
-      <div className="absolute bottom-3 left-3 right-3 rounded-lg border border-primary/15 bg-background/30 backdrop-blur px-3 py-2">
-        <p className="text-[10px] font-mono text-primary/80">Centered full-frame Spline visual</p>
-      </div>
+      <div className="absolute inset-0 pointer-events-none z-10 bg-[radial-gradient(circle_at_50%_40%,hsl(var(--primary)/0.15),transparent_60%)]" />
+      <div className="absolute inset-0 pointer-events-none z-10 bg-gradient-to-b from-background/5 via-background/10 to-background/25" />
     </div>
   );
 }
@@ -407,49 +396,57 @@ export function DebrisHeatmap() {
 
 export function SpectralIndices() {
   const ref = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const isInView = useInView(ref, { once: false, margin: "-20%" });
-  const indices = [
-    { name: "PI", value: 0.72, color: "bg-primary" },
-    { name: "SR", value: 0.58, color: "bg-secondary" },
-    { name: "NSI", value: 0.85, color: "bg-primary" },
-    { name: "FDI", value: 0.41, color: "bg-secondary" },
-  ];
-  const polymers = [
-    { label: "PE/PP", color: "text-primary border-primary/30" },
-    { label: "PET/Nylon", color: "text-secondary border-secondary/30" },
-    { label: "Mixed", color: "text-muted-foreground border-muted-foreground/30" },
-    { label: "Organic ⚠", color: "text-yellow-400 border-yellow-400/30" },
-  ];
+  const [shouldRenderSpline, setShouldRenderSpline] = useState(false);
+
+  useEffect(() => {
+    if (isInView) {
+      setShouldRenderSpline(true);
+    }
+  }, [isInView]);
+
+  // Prevent Spline canvas from stealing scroll events (Orbit/Pan)
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !shouldRenderSpline) return;
+    
+    // Intercept scroll events natively in the capture phase
+    const blockScrollHijack = (e: Event) => {
+      e.stopPropagation(); // Prevents the event from reaching the Spline canvas
+    };
+    
+    el.addEventListener('wheel', blockScrollHijack, { capture: true });
+    el.addEventListener('touchmove', blockScrollHijack, { capture: true });
+    
+    return () => {
+      el.removeEventListener('wheel', blockScrollHijack, { capture: true });
+      el.removeEventListener('touchmove', blockScrollHijack, { capture: true });
+    };
+  }, [shouldRenderSpline]);
 
   return (
-    <div ref={ref} className="glass rounded-2xl p-8 box-glow w-full h-full flex flex-col items-center justify-center gap-6">
-      <div className="text-xs font-mono text-muted-foreground">Spectral Index Analysis</div>
-      <div className="flex items-end gap-6 h-40">
-        {indices.map((idx, i) => (
-          <div key={idx.name} className="flex flex-col items-center gap-2">
-            <motion.div
-              className={`w-6 rounded-t ${idx.color}/60`}
-              initial={{ height: 0 }}
-              animate={isInView ? { height: `${idx.value * 120}px` } : { height: 0 }}
-              transition={{ duration: 0.8, delay: 0.2 + i * 0.15, ease: "easeOut" }}
-            />
-            <span className="text-xs font-mono text-muted-foreground">{idx.name}</span>
-          </div>
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-2 justify-center">
-        {polymers.map((p, i) => (
-          <motion.span
-            key={p.label}
-            className={`text-xs font-mono px-3 py-1 rounded-full border ${p.color}`}
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.8 }}
-            transition={{ delay: 1 + i * 0.15 }}
+    <div ref={ref} className="w-full h-full relative overflow-hidden">
+      <motion.div
+        className="absolute inset-0 overflow-hidden pointer-events-auto z-0"
+        initial={{ opacity: 0, scale: 1.03 }}
+        animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 1.03 }}
+        transition={{ duration: 0.9, ease: "easeOut" }}
+      >
+        {shouldRenderSpline ? (
+          <div 
+            ref={containerRef}
+            className="absolute top-1/2 left-1/2 w-[240%] h-[240%] -translate-x-1/2 -translate-y-1/2"
           >
-            {p.label}
-          </motion.span>
-        ))}
-      </div>
+            <Spline style={{ mixBlendMode: 'screen', backgroundColor: 'transparent' }} scene="https://prod.spline.design/xKBov7AsKTIo5Yyg/scene.splinecode" />
+          </div>
+        ) : (
+          <div className="w-full h-full" />
+        )}
+      </motion.div>
+
+      <div className="absolute inset-0 pointer-events-none z-10 bg-[radial-gradient(circle_at_50%_40%,hsl(var(--primary)/0.15),transparent_60%)]" />
+      <div className="absolute inset-0 pointer-events-none z-10 bg-gradient-to-b from-background/5 via-background/10 to-background/25" />
     </div>
   );
 }
@@ -600,32 +597,33 @@ export function AttributionScores() {
 export function ReportOutput() {
   const ref = useRef<HTMLDivElement>(null);
   const isInView = useInView(ref, { once: false, margin: "-20%" });
-  const outputs = [
-    { type: "PDF", desc: "Executive summary, maps, charts", icon: "📄" },
-    { type: "GeoJSON", desc: "Merged detections + attribution", icon: "🗺️" },
-    { type: "CSV", desc: "Flat cluster table", icon: "📊" },
-    { type: "JSON", desc: "Run summary metadata", icon: "⚙️" },
-  ];
+  const [shouldRenderSpline, setShouldRenderSpline] = useState(false);
+
+  useEffect(() => {
+    if (isInView) {
+      setShouldRenderSpline(true);
+    }
+  }, [isInView]);
 
   return (
-    <div ref={ref} className="glass rounded-2xl p-8 box-glow w-full h-full flex flex-col items-center justify-center gap-4">
-      <div className="text-xs font-mono text-muted-foreground">Generated Reports</div>
-      <div className="grid grid-cols-2 gap-3 w-full max-w-xs">
-        {outputs.map((out, i) => (
-          <motion.div
-            key={out.type}
-            className="glass rounded-lg p-4 text-center space-y-2 cursor-default"
-            initial={{ opacity: 0, y: 30, scale: 0.9 }}
-            animate={isInView ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 30, scale: 0.9 }}
-            transition={{ duration: 0.5, delay: 0.3 + i * 0.15 }}
-            whileHover={{ scale: 1.05, borderColor: "hsl(166, 72%, 51%)" }}
-          >
-            <div className="text-2xl">{out.icon}</div>
-            <div className="text-sm font-heading text-foreground">{out.type}</div>
-            <div className="text-[10px] text-muted-foreground">{out.desc}</div>
-          </motion.div>
-        ))}
-      </div>
+    <div ref={ref} className="w-full h-full relative overflow-hidden">
+      <motion.div
+        className="absolute inset-0 overflow-hidden pointer-events-auto z-0"
+        initial={{ opacity: 0, scale: 1.03 }}
+        animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 1.03 }}
+        transition={{ duration: 0.9, ease: "easeOut" }}
+      >
+        {shouldRenderSpline ? (
+          <div className="w-full h-full [transform:scale(1.2)] [transform-origin:center_center]">
+            <Spline style={{ mixBlendMode: 'screen', backgroundColor: 'transparent' }} scene="https://prod.spline.design/1CQLRGWxYHCf425h/scene.splinecode" />
+          </div>
+        ) : (
+          <div className="w-full h-full" />
+        )}
+      </motion.div>
+
+      <div className="absolute inset-0 pointer-events-none z-10 bg-[radial-gradient(circle_at_50%_40%,hsl(var(--primary)/0.15),transparent_60%)]" />
+      <div className="absolute inset-0 pointer-events-none z-10 bg-gradient-to-b from-background/5 via-background/10 to-background/25" />
     </div>
   );
 }

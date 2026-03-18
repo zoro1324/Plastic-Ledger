@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Application } from "@splinetool/runtime";
 
-const SPLINE_SCENE_URL = "https://prod.spline.design/BwOQILdt1JWF2ymp/scene.splinecode";
+const SPLINE_SCENE_URL = "https://prod.spline.design/KQUi5HWp2z2Rohxm/scene.splinecode";
 const HINT_TEXT_QUERY = "move your mouse";
 
 function hideHintNodes(node: unknown) {
@@ -60,7 +60,7 @@ export default function SplineGlobe() {
 
   return (
     <div className="absolute inset-0 z-0 overflow-hidden" aria-hidden="true">
-      <div className="absolute left-1/2 top-1/2 h-[140vh] w-[140vw] -translate-x-1/2 -translate-y-1/2 md:h-[165vh] md:w-[165vw] lg:h-[175vh] lg:w-[175vw]">
+      <div className="absolute left-1/2 top-1/2 h-[340vh] w-[240vw] -translate-x-[60%] -translate-y-1/2 md:h-[270vh] md:w-[270vw] md:-translate-x-[57%] lg:h-[300vh] lg:w-[300vw] lg:-translate-x-[56%]">
         <canvas ref={canvasRef} className="h-full w-full" />
       </div>
     </div>

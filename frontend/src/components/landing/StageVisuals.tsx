@@ -124,6 +124,141 @@ export function SplinePreprocessBackgroundVisual() {
   );
 }
 
+export function SplineDetectionBackgroundVisual() {
+  const ref = useRef<HTMLDivElement>(null);
+  const isInView = useInView(ref, { once: false, margin: "-20%" });
+  const [shouldRenderSpline, setShouldRenderSpline] = useState(false);
+
+  useEffect(() => {
+    if (isInView) {
+      setShouldRenderSpline(true);
+    }
+  }, [isInView]);
+
+  return (
+    <div ref={ref} className="w-full h-full relative overflow-hidden pointer-events-none">
+      <motion.div
+        className="absolute inset-0 overflow-hidden pointer-events-none z-0"
+        initial={{ opacity: 0, scale: 1.03 }}
+        animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 1.03 }}
+        transition={{ duration: 0.9, ease: "easeOut" }}
+      >
+        {shouldRenderSpline ? (
+          <div className="w-full h-full pointer-events-none [transform:scale(1.22)] [transform-origin:center_center] [filter:saturate(0.7)_brightness(0.55)_contrast(1.05)]">
+            <Spline scene="https://prod.spline.design/XLBNexSpNR4za0AV/scene.splinecode" />
+          </div>
+        ) : (
+          <div className="w-full h-full bg-[#070a16]" />
+        )}
+      </motion.div>
+
+      <div className="absolute inset-0 pointer-events-none z-10 bg-[radial-gradient(circle_at_48%_35%,hsl(var(--primary)/0.16),transparent_68%)]" />
+      <div className="absolute inset-0 pointer-events-none z-10 bg-[linear-gradient(120deg,hsl(var(--secondary)/0.14)_0%,transparent_45%,hsl(var(--primary)/0.12)_100%)]" />
+      <div className="absolute inset-0 pointer-events-none z-10 bg-gradient-to-b from-background/12 via-background/22 to-background/40" />
+    </div>
+  );
+}
+
+export function SplineDetectionRobotVisual() {
+  const ref = useRef<HTMLDivElement>(null);
+  const isInView = useInView(ref, { once: false, margin: "-20%" });
+  const [shouldRenderSpline, setShouldRenderSpline] = useState(false);
+
+  useEffect(() => {
+    if (isInView) {
+      setShouldRenderSpline(true);
+    }
+  }, [isInView]);
+
+  return (
+    <div ref={ref} className="w-full h-full rounded-2xl overflow-hidden relative">
+      <motion.div
+        className="w-full h-full"
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.96 }}
+        transition={{ duration: 0.8, ease: "easeOut" }}
+      >
+        {shouldRenderSpline ? (
+          <div className="w-full h-full [transform:scale(1.08)] [transform-origin:center_center]">
+            <Spline scene="https://prod.spline.design/XLBNexSpNR4za0AV/scene.splinecode" />
+          </div>
+        ) : (
+          <div className="w-full h-full" />
+        )}
+      </motion.div>
+    </div>
+  );
+}
+
+export function SplineBacktrackBackgroundVisual() {
+  const ref = useRef<HTMLDivElement>(null);
+  const isInView = useInView(ref, { once: false, margin: "-20%" });
+  const [shouldRenderSpline, setShouldRenderSpline] = useState(false);
+
+  useEffect(() => {
+    if (isInView) {
+      setShouldRenderSpline(true);
+    }
+  }, [isInView]);
+
+  return (
+    <div ref={ref} className="w-full h-full relative overflow-hidden">
+      <motion.div
+        className="absolute inset-0 overflow-hidden pointer-events-auto z-0"
+        initial={{ opacity: 0, scale: 1.03 }}
+        animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 1.03 }}
+        transition={{ duration: 0.9, ease: "easeOut" }}
+      >
+        {shouldRenderSpline ? (
+          <div className="w-full h-full [transform:scale(1.18)] [transform-origin:center_center]">
+            <Spline scene="https://prod.spline.design/7zDr3Xu9EtlR2Yqp/scene.splinecode" />
+          </div>
+        ) : (
+          <div className="w-full h-full bg-[#070a16]" />
+        )}
+      </motion.div>
+
+      <div className="absolute inset-0 pointer-events-none z-10 bg-[radial-gradient(circle_at_50%_35%,hsl(var(--secondary)/0.13),transparent_70%)]" />
+      <div className="absolute inset-0 pointer-events-none z-10 bg-gradient-to-b from-background/5 via-background/12 to-background/28" />
+    </div>
+  );
+}
+
+export function SplineAttributionBackgroundVisual() {
+  const ref = useRef<HTMLDivElement>(null);
+  const isInView = useInView(ref, { once: false, margin: "-20%" });
+  const [shouldRenderSpline, setShouldRenderSpline] = useState(false);
+
+  useEffect(() => {
+    if (isInView) {
+      setShouldRenderSpline(true);
+    }
+  }, [isInView]);
+
+  return (
+    <div ref={ref} className="w-full h-full relative overflow-hidden pointer-events-none">
+      <motion.div
+        className="absolute inset-0 overflow-hidden pointer-events-none z-0"
+        initial={{ opacity: 0, scale: 1.03 }}
+        animate={isInView ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 1.03 }}
+        transition={{ duration: 0.9, ease: "easeOut" }}
+      >
+        {shouldRenderSpline ? (
+          <div className="w-full h-full pointer-events-none [transform:scale(1.25)] [transform-origin:center_center] [filter:saturate(0.55)_hue-rotate(20deg)_brightness(0.38)_contrast(1.1)]">
+            <Spline scene="https://prod.spline.design/hlUJ4ygkS-cjKrNf/scene.splinecode" />
+          </div>
+        ) : (
+          <div className="w-full h-full bg-[#070a16]" />
+        )}
+      </motion.div>
+
+      <div className="absolute inset-0 pointer-events-none z-10 bg-[radial-gradient(circle_at_50%_38%,hsl(var(--primary)/0.15),transparent_66%)]" />
+      <div className="absolute inset-0 pointer-events-none z-10 bg-[linear-gradient(120deg,hsl(var(--primary)/0.2)_0%,transparent_40%,hsl(var(--secondary)/0.18)_100%)]" />
+      <div className="absolute inset-0 pointer-events-none z-10 bg-gradient-to-b from-background/34 via-background/48 to-background/70" />
+    </div>
+  );
+}
+
 export function SatelliteBands() {
   const ref = useRef<HTMLDivElement>(null);
   const isInView = useInView(ref, { once: false, margin: "-20%" });

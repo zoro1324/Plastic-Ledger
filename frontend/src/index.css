@@ -2,6 +2,29 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Leaflet + Tailwind preflight conflict fix ── */
+/* Tailwind's base/preflight resets SVG styles which makes
+   Leaflet draw shapes (rectangles, polygons) invisible.     */
+.leaflet-container svg {
+  max-width: none !important;
+  max-height: none !important;
+}
+
+.leaflet-overlay-pane svg {
+  position: absolute;
+}
+
+.leaflet-container .leaflet-overlay-pane,
+.leaflet-container .leaflet-shadow-pane,
+.leaflet-container .leaflet-marker-pane {
+  pointer-events: auto;
+}
+
+/* Ensure draw toolbar icons show */
+.leaflet-draw-toolbar a {
+  background-size: 300px 30px;
+}
+
 @layer base {
   :root {
     --background: 222 47% 2%;

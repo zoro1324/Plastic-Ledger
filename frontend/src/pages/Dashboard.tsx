@@ -106,9 +106,11 @@ export default function Dashboard() {
       draw: {
         rectangle: {
           shapeOptions: {
-            color: "hsl(166, 72%, 51%)",
-            weight: 2,
-            fillOpacity: 0.15,
+            color: "#34d399",
+            weight: 3,
+            opacity: 1,
+            fillColor: "#34d399",
+            fillOpacity: 0.25,
           },
         },
         polygon: false,

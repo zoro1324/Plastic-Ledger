@@ -139,6 +139,21 @@ export default function Dashboard() {
       });
     });
 
+    map.on(L.Draw.Event.EDITED, (e: any) => {
+      const layers = e.layers;
+      layers.eachLayer((layer: any) => {
+        if (layer instanceof L.Rectangle) {
+          const bounds = layer.getBounds();
+          setBBox({
+            lon_min: bounds.getWest(),
+            lat_min: bounds.getSouth(),
+            lon_max: bounds.getEast(),
+            lat_max: bounds.getNorth(),
+          });
+        }
+      });
+    });
+
     map.on(L.Draw.Event.DELETED, () => {
       setBBox(null);
     });
@@ -146,9 +161,16 @@ export default function Dashboard() {
     leafletMapRef.current = map;
 
     // Ensure map resizes correctly
+    const resizeObserver = new ResizeObserver(() => {
+      map.invalidateSize();
+    });
+    resizeObserver.observe(mapRef.current);
+
+    // Minor delay to catch first render paints
     setTimeout(() => map.invalidateSize(), 200);
 
     return () => {
+      resizeObserver.disconnect();
       map.remove();
       leafletMapRef.current = null;
       drawnItemsRef.current = null;
@@ -221,10 +243,10 @@ export default function Dashboard() {
     <main className="bg-background min-h-screen pt-14">
       <div className="flex flex-col lg:flex-row h-[calc(100vh-3.5rem)]">
         {/* ─── Map ─── */}
-        <div className="flex-1 relative">
+        <div className="flex-1 relative w-full h-full min-h-[500px]">
           <div
             ref={mapRef}
-            className="h-full w-full z-0"
+            className="absolute inset-0 z-0"
             style={{ background: "hsl(222, 47%, 2%)" }}
           />
 

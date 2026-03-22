@@ -23,6 +23,8 @@ data/reference/
 data/reports/
 data/
 
+images/
+
 # Environment
 .env
 .venv/

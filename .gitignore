@@ -24,7 +24,7 @@ data/reports/
 data/
 
 images/
-
+*.pt
 # Environment
 .env
 .venv/

@@ -22,7 +22,7 @@ data/attribution/
 data/reference/
 data/reports/
 data/
-
+*.pkl
 images/
 *.pt
 *.h5

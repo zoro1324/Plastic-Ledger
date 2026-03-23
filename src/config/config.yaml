@@ -1,9 +1,10 @@
 model:
-  checkpoint: models/runs/marida_v1/best_model.pth
+  checkpoint: d:/Plastic-Ledger/best-models/best_model_SegTransformer.pth
+  architecture: segformer_b0   # SegFormer-B0 with 11-band input
   num_bands: 11
   num_classes: 15
-  encoder: resnet34
-  debris_threshold: 0.15
+  debris_threshold: 0.10        # Recall-optimised (was 0.15)
+  debris_logit_boost: 0.5       # Logit boost for Marine Debris channel
   tta: true
 
 preprocessing:

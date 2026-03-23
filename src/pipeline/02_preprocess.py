@@ -234,7 +234,7 @@ def normalize_scene(
     """Clip and z-score normalize an 11-band scene.
 
     Args:
-        image: ``(11, H, W)`` raw reflectance array.
+        image: ``(11, H, W)`` raw Sentinel-2 DN values (0-10000 range).
         band_means: Per-band means (defaults to MARIDA stats).
         band_stds: Per-band stds (defaults to MARIDA stats).
 
@@ -249,17 +249,22 @@ def normalize_scene(
     # Detect nodata pixels (all-zero across bands)
     nodata_mask = (image.sum(axis=0) == 0)
 
-    # Clip raw reflectance
+    # CRITICAL: Convert DN to reflectance (Sentinel-2 L2A is scaled by 10000)
+    # This must match the SegFormer training preprocessing
+    image = image / 10000.0
+
+    # Clip to MARIDA training range [0.0001, 0.5] for marine water scenes
+    # (marine water reflectance is typically 0.02-0.06, with some sand/cloud up to 0.5)
     image = np.clip(image, 0.0001, 0.5)
 
-    # Z-score normalize per band
+    # Z-score normalize per band using MARIDA training statistics
     for b in range(NUM_BANDS):
         image[b] = (image[b] - band_means[b]) / (band_stds[b] + 1e-6)
 
     # Reset nodata pixels to 0 after normalization
     image[:, nodata_mask] = 0.0
 
-    # Safety clip
+    # Safety clip to prevent numerical issues [-5, 5] covers ~5-sigma range
     image = np.clip(image, -5.0, 5.0)
     image = np.nan_to_num(image, nan=0.0, posinf=5.0, neginf=-5.0)
 
@@ -396,6 +401,27 @@ def run(
     logger.info("Normalizing scene (clip + z-score)")
     image, nodata_mask = normalize_scene(image)
 
+    # Debug: Log statistics about normalized data
+    valid_pixels = ~nodata_mask
+    if valid_pixels.any():
+        logger.info(
+            "Normalization stats (valid pixels only): "
+            "min=%.4f, max=%.4f, mean=%.4f, std=%.4f",
+            image[:, valid_pixels].min(),
+            image[:, valid_pixels].max(),
+            image[:, valid_pixels].mean(),
+            image[:, valid_pixels].std(),
+        )
+        # Per-band stats
+        for b in range(min(3, image.shape[0])):  # Log first 3 bands
+            band_valid = image[b, valid_pixels]
+            logger.debug(
+                "Band %d: min=%.4f, max=%.4f, mean=%.4f",
+                b, band_valid.min(), band_valid.max(), band_valid.mean(),
+            )
+    else:
+        logger.warning("All pixels marked as nodata! Check input data.")
+
     # Save nodata mask
     nodata_path = out_dir / "nodata_mask.npy"
     np.save(nodata_path, nodata_mask)
@@ -409,9 +435,21 @@ def run(
 
     # Save patches and build index
     patch_index = {}
+    patch_stats = {"min": [], "max": [], "mean": [], "std": []}
+    
     for i, (patch, info) in enumerate(zip(patches, patch_infos)):
         patch_id = f"patch_{i:04d}"
         patch_arr = patch.astype(np.float16 if patch_dtype == "float16" else np.float32, copy=False)
+        
+        # Collect statistics (on a few patches for logging)
+        if i < 5 or i == len(patches) - 1:
+            valid = patch_arr > -10  # Most valid pixels are > -10
+            if valid.any():
+                patch_stats["min"].append(patch_arr[valid].min())
+                patch_stats["max"].append(patch_arr[valid].max())
+                patch_stats["mean"].append(patch_arr[valid].mean())
+                patch_stats["std"].append(patch_arr[valid].std())
+        
         patch_path = patches_dir / f"{patch_id}.{patch_storage}"
         if patch_storage == "npz":
             np.savez_compressed(patch_path, patch=patch_arr)
@@ -444,6 +482,16 @@ def run(
             "crs": str(crs) if crs else None,
             "nodata_mask_path": str(nodata_path),
         }
+
+    # Log patch statistics from sampled patches
+    if patch_stats["mean"]:
+        logger.info(
+            "Patch statistics (sampled %d patches): "
+            "min=%.4f, max=%.4f, mean=%.4f, std=%.4f",
+            len(patch_stats["mean"]),
+            min(patch_stats["min"]), max(patch_stats["max"]),
+            np.mean(patch_stats["mean"]), np.mean(patch_stats["std"]),
+        )
 
     # Save patch index
     index_path = out_dir / "patch_index.json"

@@ -22,13 +22,14 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import rasterio
 from rasterio.transform import Affine
 from scipy.ndimage import label as ndimage_label, find_objects as ndimage_find_objects
 import geopandas as gpd
 from shapely.geometry import shape, mapping, Polygon, MultiPolygon
-import segmentation_models_pytorch as smp
+from transformers import SegformerForSemanticSegmentation, SegformerConfig
 
 from pipeline.utils.logging_utils import get_logger
 from pipeline.utils.geo_utils import save_geotiff, array_to_polygons
@@ -42,7 +43,8 @@ logger = get_logger(__name__)
 NUM_CLASSES = 15
 NUM_BANDS = 11
 DEBRIS_CLASS_INDEX = 0
-DEFAULT_THRESHOLD = 0.15
+DEFAULT_THRESHOLD = 0.10        # Lowered from 0.15 → improves recall for sparse debris
+DEBRIS_LOGIT_BOOST = 0.5       # Added to the raw debris logit before softmax
 MIN_CLUSTER_AREA_M2 = 100          # 4 pixels at 10m resolution
 MAX_CLUSTER_AREA_M2 = 50_000_000   # 50 km² — anything larger is a false positive
 
@@ -62,7 +64,12 @@ def load_model(
     checkpoint_path: Union[str, Path],
     device: torch.device,
 ) -> torch.nn.Module:
-    """Load the trained U-Net model from a checkpoint.
+    """Load the trained SegFormer model from a checkpoint.
+
+    The checkpoint is a raw ``state_dict`` saved by the training loop in
+    ``SegFormer-Model/train.py``.  The function rebuilds the HuggingFace
+    SegFormer-B0 architecture with an 11-channel patch embedding and loads
+    the weights.
 
     Args:
         checkpoint_path: Path to the ``.pth`` checkpoint file.
@@ -73,32 +80,41 @@ def load_model(
 
     Raises:
         FileNotFoundError: If *checkpoint_path* does not exist.
-        KeyError: If the checkpoint is missing required keys.
     """
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Model checkpoint not found: {checkpoint_path}")
 
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    # ── Build SegFormer-B0 with 11-channel input ──────────────────────────
+    cfg = SegformerConfig(
+        num_labels=NUM_CLASSES,
+        num_channels=NUM_BANDS,
+        depths=[2, 2, 2, 2],
+        hidden_sizes=[32, 64, 160, 256],
+        decoder_hidden_size=256,
+    )
+    model = SegformerForSemanticSegmentation(cfg)
 
-    encoder = ckpt.get("encoder", "resnet34")
-    num_bands = ckpt.get("num_bands", NUM_BANDS)
-    num_classes = ckpt.get("num_classes", NUM_CLASSES)
+    # Overwrite the first patch-embedding Conv to accept 11 bands
+    old = model.segformer.encoder.patch_embeddings[0].proj
+    new_conv = nn.Conv2d(
+        NUM_BANDS, old.out_channels,
+        kernel_size=old.kernel_size,
+        stride=old.stride,
+        padding=old.padding,
+    )
+    nn.init.kaiming_normal_(new_conv.weight)
+    model.segformer.encoder.patch_embeddings[0].proj = new_conv
 
-    model = smp.Unet(
-        encoder_name=encoder,
-        encoder_weights=None,
-        in_channels=num_bands,
-        classes=num_classes,
-        activation=None,
-    ).to(device).float()
-
-    model.load_state_dict(ckpt["model_state"])
+    # ── Load weights ────────────────────────────────────────────────────────
+    state_dict = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    model.load_state_dict(state_dict, strict=False)  # strict=False tolerates minor key diffs
+    model = model.to(device).float()
     model.eval()
 
     logger.info(
-        "Loaded model: encoder=%s, epoch=%s, bands=%d, classes=%d",
-        encoder, ckpt.get("epoch", "?"), num_bands, num_classes,
+        "Loaded SegFormer checkpoint: %s  (device=%s, classes=%d, bands=%d)",
+        checkpoint_path.name, device, NUM_CLASSES, NUM_BANDS,
     )
     return model
 
@@ -163,18 +179,26 @@ def run_tta_inference(
     patch: np.ndarray,
     device: torch.device,
     use_tta: bool = True,
+    debris_logit_boost: float = DEBRIS_LOGIT_BOOST,
 ) -> np.ndarray:
     """Run inference with Test-Time Augmentation (6 variants).
 
+    Applies an optional logit boost to the Marine Debris channel before
+    softmax to structurally increase recall for the primary target class.
+
     Args:
-        model: Loaded U-Net model in eval mode.
-        patch: ``(C, H, W)`` normalized float32 array.
+        model: Loaded SegFormer model in eval mode.
+        patch: ``(C, H, W)`` normalised float32 array.
         device: Torch device.
-        use_tta: If ``False``, skip TTA and run single forward pass.
+        use_tta: If ``False``, skip TTA and run a single forward pass.
+        debris_logit_boost: Scalar added to the debris logit channel before
+            softmax.  Higher values increase recall at the cost of precision.
 
     Returns:
-        ``(num_classes, H, W)`` averaged probability map.
+        ``(num_classes, H, W)`` averaged probability map, upsampled to match
+        the input patch spatial size.
     """
+    H, W = patch.shape[1], patch.shape[2]
     aug_types = (
         ["original", "hflip", "vflip", "rot90", "rot180", "rot270"]
         if use_tta
@@ -187,11 +211,22 @@ def run_tta_inference(
         augmented = _apply_augmentation(patch, aug)
         tensor = torch.from_numpy(augmented).unsqueeze(0).float().to(device)
 
-        logits = model(tensor)
-        logits = torch.clamp(logits, -30.0, 30.0)
-        probs = F.softmax(logits, dim=1)[0].cpu().numpy()  # (C, H, W)
+        # SegFormer returns an object with .logits — shape (1, C, H//4, W//4)
+        out    = model(tensor)
+        logits = out.logits  # (1, num_classes, H', W')
 
-        # Reverse the augmentation on the output
+        # ── Debris logit boost — raise the debris channel before softmax ──
+        if debris_logit_boost > 0:
+            logits = logits.clone()
+            logits[:, DEBRIS_CLASS_INDEX, :, :] += debris_logit_boost
+
+        # ── Upsample back to patch resolution ─────────────────────────────
+        logits = F.interpolate(
+            logits, size=(H, W), mode="bilinear", align_corners=False
+        )
+        logits = torch.clamp(logits, -30.0, 30.0)
+        probs  = F.softmax(logits, dim=1)[0].cpu().numpy()  # (C, H, W)
+
         probs = _reverse_augmentation(probs, aug)
 
         if accumulated is None:

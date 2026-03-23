@@ -26,8 +26,18 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 # Ensure project root is on sys.path for direct script execution
 _project_root = str(Path(__file__).resolve().parent.parent)
+_src_dir = Path(__file__).resolve().parent.parent   # d:\...\src
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
+
+# Load .env from src/ regardless of CWD
+_env_file = _src_dir / ".env"
+if _env_file.exists():
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+        _load_dotenv(_env_file, override=False)
+    except ImportError:
+        pass
 
 from pipeline.utils.logging_utils import get_logger
 from pipeline.utils.cache_utils import load_config
@@ -58,7 +68,7 @@ def run_pipeline(
     backtrack_days: int = 30,
     skip_stages: Set[int] = None,
     cleanup_patches: bool = False,
-    config_path: str = "config/config.yaml",
+    config_path: str = None,    # None → resolved relative to this file
 ) -> Dict[str, Any]:
     """Run the complete Plastic-Ledger pipeline.
 
@@ -86,9 +96,12 @@ def run_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = Path(model_path)
 
-    # Load config
+    # Load config — resolve path relative to src/ so it works from any CWD
+    if config_path is None:
+        config_path = str(_src_dir / "config" / "config.yaml")
+    env_path = str(_src_dir / ".env")
     try:
-        config = load_config(config_path)
+        config = load_config(config_path, env_path=env_path)
     except FileNotFoundError:
         logger.warning("Config file not found: %s — using defaults", config_path)
         config = {}
@@ -492,8 +505,8 @@ def main():
     )
     parser.add_argument(
         "--model_path", type=str,
-        default="models/runs/marida_v1/best_model.pth",
-        help="Path to trained model checkpoint",
+        default=r"d:/Plastic-Ledger/best-models/best_model_SegTransformer.pth",
+        help="Path to trained SegFormer checkpoint (.pth)",
     )
     parser.add_argument("--cloud_cover", type=int, default=20)
     parser.add_argument("--backtrack_days", type=int, default=30)
@@ -506,8 +519,8 @@ def main():
         help="Comma-separated stage numbers to skip, e.g. '1,5'",
     )
     parser.add_argument(
-        "--config", type=str, default="config/config.yaml",
-        help="Path to config.yaml",
+        "--config", type=str, default=None,
+        help="Path to config.yaml (default: src/config/config.yaml)",
     )
     args = parser.parse_args()
 

@@ -25,6 +25,8 @@ data/
 
 images/
 *.pt
+*.h5
+
 # Environment
 .env
 .venv/

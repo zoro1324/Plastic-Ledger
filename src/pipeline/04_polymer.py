@@ -1,8 +1,9 @@
 """
 Plastic-Ledger — Stage 4: Polymer Type Classification
 ========================================================
-Classifies detected debris clusters by polymer type using SWIR/NIR spectral
-ratios and a rule-based decision tree.
+Classifies detected debris clusters by polymer type using a
+Random Forest trained on MARIDA spectral signatures (primary)
+with a rule-based spectral index fallback (secondary).
 
 Usage (standalone):
     python -m pipeline.04_polymer \\
@@ -10,7 +11,7 @@ Usage (standalone):
         --detections data/detections/SCENE_ID/detections.geojson \\
         --processed_dir data/processed/SCENE_ID
 
-Dependencies: geopandas, rasterio, numpy, shapely
+Dependencies: geopandas, rasterio, numpy, shapely, joblib, scikit-learn
 """
 
 import argparse
@@ -29,6 +30,116 @@ from pipeline.utils.logging_utils import get_logger
 from pipeline.utils.cache_utils import load_config, stage_output_exists
 
 logger = get_logger(__name__)
+
+# ── RF Polymer Model ─────────────────────────────────────────────
+# Default location for the trained Random Forest model, label map,
+# and feature list produced by MARIDA_h5_dataset_signatures/train_polymer_model.py
+_DEFAULT_RF_MODEL_DIR = Path(r"d:\Plastic-Ledger\MARIDA_h5_dataset_signatures")
+RF_MODEL_PATH   = _DEFAULT_RF_MODEL_DIR / "polymer_rf_model.pkl"
+RF_LABEL_PATH   = _DEFAULT_RF_MODEL_DIR / "polymer_label_map.json"
+RF_FEATURE_PATH = _DEFAULT_RF_MODEL_DIR / "polymer_feature_names.json"
+
+# MARIDA class → human-readable polymer type used in the GeoJSON output
+MARIDA_CLASS_TO_POLYMER = {
+    "Marine Debris":           "Marine Debris (Plastic)",
+    "Dense Sargassum":         "Organic Matter (Sargassum)",
+    "Sparse Sargassum":        "Organic Matter (Sparse Sargassum)",
+    "Natural Organic Material": "Organic Matter (NOM)",
+    "Foam":                    "Organic Matter (Foam)",
+    "Ship":                    "False Positive (Ship)",
+    "Clouds":                  "False Positive (Cloud)",
+    "Cloud Shadows":           "False Positive (Cloud Shadow)",
+    "Wakes":                   "False Positive (Wake)",
+    "Marine Water":            "False Positive (Water)",
+    "Mixed Water":             "False Positive (Mixed Water)",
+    "Turbid Water":            "False Positive (Turbid Water)",
+    "Sediment-Laden Water":    "False Positive (Sediment)",
+    "Shallow Water":           "False Positive (Shallow Water)",
+    "Waves":                   "False Positive (Waves)",
+}
+FALSE_POSITIVE_CLASSES = {
+    "Ship", "Clouds", "Cloud Shadows", "Wakes",
+    "Marine Water", "Mixed Water", "Turbid Water",
+    "Sediment-Laden Water", "Shallow Water", "Waves",
+}
+
+
+def load_rf_model():
+    """Load the trained Random Forest polymer classifier.
+
+    Returns:
+        Tuple of (rf_model, label_id_to_class, feature_names) or
+        (None, None, None) if the model file cannot be found.
+    """
+    try:
+        import joblib
+        if not RF_MODEL_PATH.exists():
+            logger.warning(
+                "RF polymer model not found at %s — falling back to rule-based classifier.",
+                RF_MODEL_PATH,
+            )
+            return None, None, None
+
+        rf = joblib.load(RF_MODEL_PATH)
+
+        with open(RF_LABEL_PATH) as fh:
+            label_map = json.load(fh)   # class_name → int_id
+        id_to_class = {v: k for k, v in label_map.items()}
+
+        with open(RF_FEATURE_PATH) as fh:
+            feature_names = json.load(fh)   # ordered list of band names
+
+        logger.info(
+            "Loaded RF polymer model: %d classes, %d features",
+            len(label_map), len(feature_names),
+        )
+        return rf, id_to_class, feature_names
+
+    except ImportError:
+        logger.warning("joblib not installed — falling back to rule-based classifier.")
+        return None, None, None
+    except Exception as exc:
+        logger.warning("Failed to load RF model (%s) — falling back.", exc)
+        return None, None, None
+
+
+def classify_cluster_rf(
+    spectrum: np.ndarray,
+    rf_model,
+    id_to_class: Dict[int, str],
+    feature_names: List[str],
+) -> Tuple[str, bool, float]:
+    """Classify a debris cluster using the Random Forest.
+
+    Args:
+        spectrum: 11-element raw reflectance array (Stage 2 band order).
+        rf_model: Loaded Random Forest.
+        id_to_class: Integer label → class name mapping.
+        feature_names: Ordered list of MARIDA band names (e.g. 'nm440').
+
+    Returns:
+        Tuple of (polymer_type_str, is_false_positive, confidence_0_to_1).
+    """
+    # MARIDA feature names mapped to Stage-2 band indices:
+    # nm440=B01≈idx0, nm490=B02≈idx1, nm560=B03≈idx2, nm665=B04≈idx3,
+    # nm705=B05≈idx4, nm740=B06≈idx5, nm783=B07≈idx6, nm842=B08≈idx7,
+    # nm865=B8A≈idx8, nm1600=B11≈idx9, nm2200=B12≈idx10
+    MARIDA_TO_BAND_IDX = {
+        "nm440": 0, "nm490": 1, "nm560": 2, "nm665": 3,
+        "nm705": 4, "nm740": 5, "nm783": 6, "nm842": 7,
+        "nm865": 8, "nm1600": 9, "nm2200": 10,
+    }
+    feat_vec = np.array(
+        [spectrum[MARIDA_TO_BAND_IDX.get(fn, 0)] for fn in feature_names],
+        dtype=np.float32,
+    ).reshape(1, -1)
+
+    pred_id   = rf_model.predict(feat_vec)[0]
+    class_name = id_to_class.get(pred_id, "Unclassified")
+    proba     = rf_model.predict_proba(feat_vec)[0].max()
+    polymer   = MARIDA_CLASS_TO_POLYMER.get(class_name, class_name)
+    is_fp     = class_name in FALSE_POSITIVE_CLASSES
+    return polymer, is_fp, float(proba)
 
 
 def _load_patch_array(patch_path: Path) -> np.ndarray:
@@ -364,6 +475,11 @@ def run(
     if scene_crs and gdf.crs and str(gdf.crs) != str(scene_crs):
         gdf_for_spectra = gdf.to_crs(scene_crs)
 
+    # ── Load RF model (once, shared across all clusters) ────────────────
+    rf_model, id_to_class, rf_feature_names = load_rf_model()
+    use_rf = rf_model is not None
+    logger.info("Polymer classifier: %s", "Random Forest" if use_rf else "rule-based fallback")
+
     # Classify each cluster
     polymer_types = []
     pi_values = []
@@ -371,16 +487,13 @@ def run(
     nsi_values = []
     fdi_values = []
     is_false_positives = []
+    rf_confidences = []
 
     n_nodata = 0
     total_clusters = len(gdf)
     for idx, row in gdf.iterrows():
         spectral_geom = gdf_for_spectra.geometry.iloc[idx]
 
-        # -----------------------------------------------------------
-        # Guard: detections whose footprint is mostly nodata are false
-        # positives produced by the model on unobserved pixels.
-        # -----------------------------------------------------------
         if (
             nodata_mask_2d is not None
             and scene_transform is not None
@@ -392,6 +505,7 @@ def run(
             nsi_values.append(0.0)
             fdi_values.append(0.0)
             is_false_positives.append(True)
+            rf_confidences.append(0.0)
             n_nodata += 1
             continue
 
@@ -403,13 +517,23 @@ def run(
             spectrum = None
 
         if spectrum is not None:
-            indices = compute_spectral_indices(spectrum)
-            polymer, is_fp = classify_polymer(indices)
+            if use_rf:
+                # ── Primary: Random Forest classifier ──────────────────────
+                polymer, is_fp, confidence = classify_cluster_rf(
+                    spectrum, rf_model, id_to_class, rf_feature_names,
+                )
+                # Also compute rule-based indices for transparency
+                indices = compute_spectral_indices(spectrum)
+            else:
+                # ── Fallback: rule-based index classifier ───────────────
+                indices = compute_spectral_indices(spectrum)
+                polymer, is_fp = classify_polymer(indices)
+                confidence = 0.0
         else:
-            # Cannot extract spectrum — use defaults
             indices = {"pi": 0.0, "sr": 0.0, "nsi": 0.0, "fdi": 0.0}
             polymer = "Unknown (insufficient spectral data)"
             is_fp = False
+            confidence = 0.0
 
         polymer_types.append(polymer)
         pi_values.append(indices["pi"])
@@ -417,13 +541,12 @@ def run(
         nsi_values.append(indices["nsi"])
         fdi_values.append(indices["fdi"])
         is_false_positives.append(is_fp)
+        rf_confidences.append(confidence)
 
         if (idx + 1) % 200 == 0 or idx == total_clusters - 1:
             logger.info(
                 "  Processed %d/%d clusters (%d nodata)",
-                idx + 1,
-                total_clusters,
-                n_nodata,
+                idx + 1, total_clusters, n_nodata,
             )
 
     gdf["polymer_type"] = polymer_types
@@ -432,6 +555,7 @@ def run(
     gdf["nsi_value"] = nsi_values
     gdf["fdi_value"] = fdi_values
     gdf["is_false_positive"] = is_false_positives
+    gdf["rf_confidence"] = rf_confidences
 
     gdf.to_file(out_path, driver="GeoJSON")
 

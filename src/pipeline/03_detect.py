@@ -29,7 +29,7 @@ import rasterio
 from rasterio.transform import Affine
 from scipy.ndimage import label as ndimage_label, find_objects as ndimage_find_objects
 import geopandas as gpd
-from shapely.geometry import shape, mapping, Polygon, MultiPolygon
+from shapely.geometry import shape, mapping, Polygon, MultiPolygon, Point
 from transformers import SegformerForSemanticSegmentation, SegformerConfig
 
 from pipeline.utils.logging_utils import get_logger
@@ -501,6 +501,13 @@ def extract_clusters(
         wgs84_projector = pyproj.Transformer.from_crs(
             crs, "EPSG:4326", always_xy=True,
         ).transform
+    # If CRS is marked as EPSG:4326 but coordinates look like UTM (>180), auto-detect UTM
+    # This handles cases where scene_crs is incorrectly labeled geographic
+    elif crs is None or str(crs) == "EPSG:4326":
+        # Check if image appears to be in UTM space by looking at transform values
+        if abs(transform.a) > 1 or abs(transform.e) > 1:  # Transform values >> 1 suggest projected coords
+            # Try to infer UTM zone from image location; fallback to auto-detection per cluster
+            pass  # We'll handle this at centroid projection time
 
     for cluster_id, cluster_slice in enumerate(component_slices, start=1):
         if cluster_slice is None:
@@ -543,6 +550,38 @@ def extract_clusters(
             centroid_lonlat = shp_transform(wgs84_projector, centroid)
         else:
             centroid_lonlat = centroid
+            # Safety check: if centroid is outside geographic bounds, it's in a projected CRS
+            # Geographic bounds: lon in [-180, 180], lat in [-90, 90]
+            if abs(centroid_lonlat.x) > 180 or abs(centroid_lonlat.y) > 90:
+                logger.debug(
+                    "Auto-detecting projected CRS for centroid (%.1f, %.1f)",
+                    centroid_lonlat.x, centroid_lonlat.y,
+                )
+                try:
+                    import pyproj
+                    from shapely.ops import transform as shp_transform
+                    # Infer UTM zone from easting coordinate
+                    # Standard UTM easting: 166000 (W edge) to 834000 (E edge)
+                    utm_zone = int((centroid_lonlat.x - 166000) / (834000 - 166000) * 60) + 1
+                    utm_zone = max(1, min(utm_zone, 60))  # Clamp to valid range
+                    
+                    # Determine north/south hemisphere from northing
+                    # N. hemisphere: roughly 0-10M, S. hemisphere: continues 0-10M (but usually < 10M)
+                    # For simplicity, split at 5M
+                    is_north = centroid_lonlat.y > 5_000_000
+                    epsg_code = f"EPSG:{32600 + utm_zone if is_north else 32700 + utm_zone}"
+                    
+                    proj_to_wgs84 = pyproj.Transformer.from_crs(
+                        epsg_code, "EPSG:4326", always_xy=True
+                    ).transform
+                    centroid_lonlat = shp_transform(proj_to_wgs84, centroid_lonlat)
+                    logger.debug(
+                        "Converted from %s to geographic: (%.4f, %.4f)",
+                        epsg_code, centroid_lonlat.x, centroid_lonlat.y,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to auto-convert projected coordinates: %s", exc)
+                    # Fall through with unconverted centroid
 
         clusters.append({
             "geometry": merged_geom,
@@ -749,9 +788,32 @@ def run(
     )
 
     geojson_path = out_dir / "detections.geojson"
-    geojson_gdf = gdf
-    if not gdf.empty and gdf.crs and str(gdf.crs) != "EPSG:4326":
-        geojson_gdf = gdf.to_crs("EPSG:4326")
+    # Ensure detections are always saved as geographic points in EPSG:4326.
+    # If scene CRS was projected (e.g., UTM), convert. If unclear, use centroid points.
+    if not gdf.empty:
+        try:
+            from shapely.geometry import Point
+            # Try to convert if not already geographic
+            if gdf.crs and str(gdf.crs) != "EPSG:4326":
+                geojson_gdf = gdf.to_crs("EPSG:4326")
+            else:
+                # CRS is geographic or unknown. Use centroid columns to create Point geometries
+                # in case UTM geometries were incorrectly labeled as geographic.
+                points = [
+                    Point(row["centroid_lon"], row["centroid_lat"])
+                    for _, row in gdf.iterrows()
+                ]
+                geojson_gdf = gpd.GeoDataFrame(
+                    gdf.drop(columns=["geometry"]),
+                    geometry=points,
+                    crs="EPSG:4326",
+                )
+        except Exception as exc:
+            logger.warning("Failed to ensure geographic CRS: %s — saving as-is", exc)
+            geojson_gdf = gdf
+    else:
+        geojson_gdf = gdf
+    
     geojson_gdf.to_file(geojson_path, driver="GeoJSON")
 
     logger.info(

@@ -237,48 +237,48 @@ def _load_velocity_field(nc_path: Optional[Path]) -> Optional[Any]:
     try:
         import xarray as xr
         import pandas as pd
-        ds = xr.open_dataset(nc_path)
+        with xr.open_dataset(nc_path) as ds:
 
-        # ── coordinate names (CMEMS uses 'longitude'/'latitude'; ERA5 does too) ──
-        lon_name = "longitude" if "longitude" in ds.coords else "lon"
-        lat_name = "latitude" if "latitude" in ds.coords else "lat"
-        # ERA5 from the new CDS-Beta API uses 'valid_time' instead of 'time'
-        if "time" in ds.coords:
-            time_name = "time"
-        elif "valid_time" in ds.coords:
-            time_name = "valid_time"
-        else:
-            time_name = next(
-                (c for c in ds.coords if "time" in c.lower()), list(ds.dims)[0]
-            )
+            # ── coordinate names (CMEMS uses 'longitude'/'latitude'; ERA5 does too) ──
+            lon_name = "longitude" if "longitude" in ds.coords else "lon"
+            lat_name = "latitude" if "latitude" in ds.coords else "lat"
+            # ERA5 from the new CDS-Beta API uses 'valid_time' instead of 'time'
+            if "time" in ds.coords:
+                time_name = "time"
+            elif "valid_time" in ds.coords:
+                time_name = "valid_time"
+            else:
+                time_name = next(
+                    (c for c in ds.coords if "time" in c.lower()), list(ds.dims)[0]
+                )
 
-        # ── time → tz-naive datetime64[ns] ──────────────────────────────────────
-        # CMEMS data often uses cftime objects (object dtype).  Convert to plain
-        # datetime64[ns] so numpy arithmetic works without pandas dtype juggling.
-        times_raw = ds[time_name].values
-        if times_raw.dtype == object:
-            times_np = np.array(
-                [np.datetime64(pd.Timestamp(str(t)).replace(tzinfo=None), "ns")
-                 for t in times_raw],
-                dtype="datetime64[ns]",
-            )
-        else:
-            # Cast to ns; if tz-aware, the cast strips the tz component.
-            times_np = times_raw.astype("datetime64[ns]")
+            # ── time → tz-naive datetime64[ns] ──────────────────────────────────────
+            # CMEMS data often uses cftime objects (object dtype).  Convert to plain
+            # datetime64[ns] so numpy arithmetic works without pandas dtype juggling.
+            times_raw = ds[time_name].values
+            if times_raw.dtype == object:
+                times_np = np.array(
+                    [np.datetime64(pd.Timestamp(str(t)).replace(tzinfo=None), "ns")
+                     for t in times_raw],
+                    dtype="datetime64[ns]",
+                )
+            else:
+                # Cast to ns; if tz-aware, the cast strips the tz component.
+                times_np = times_raw.astype("datetime64[ns]")
 
-        lats_np = ds[lat_name].values.astype(np.float64)
-        lons_np = ds[lon_name].values.astype(np.float64)
+            lats_np = ds[lat_name].values.astype(np.float64)
+            lons_np = ds[lon_name].values.astype(np.float64)
 
-        # ── preload data variables into numpy ───────────────────────────────────
-        # Squeeze out any singleton depth dimension so shape is (time, lat, lon).
-        data: Dict[str, Any] = {}
-        for var in ds.data_vars:
-            arr = ds[var].values          # triggers actual disk read — done once
-            while arr.ndim > 3:
-                arr = arr[:, 0]           # drop leading extra dim (e.g. depth)
-            data[var] = arr.astype(np.float32)
+            # ── preload data variables into numpy ───────────────────────────────────
+            # Squeeze out any singleton depth dimension so shape is (time, lat, lon).
+            data: Dict[str, Any] = {}
+            for var in ds.data_vars:
+                arr = ds[var].values          # triggers actual disk read — done once
+                while arr.ndim > 3:
+                    arr = arr[:, 0]           # drop leading extra dim (e.g. depth)
+                data[var] = arr.astype(np.float32)
 
-        return {"times": times_np, "lats": lats_np, "lons": lons_np, "data": data}
+            return {"times": times_np, "lats": lats_np, "lons": lons_np, "data": data}
 
     except Exception as exc:
         logger.warning("Failed to load %s: %s", nc_path, exc)
@@ -677,12 +677,6 @@ def run(
     # Save summary
     with open(out_dir / "backtrack_summary.json", "w") as fh:
         json.dump(all_sources, fh, indent=2, default=str)
-
-    # Clean up datasets
-    if ocean_ds is not None:
-        ocean_ds.close()
-    if wind_ds is not None:
-        wind_ds.close()
 
     logger.info(
         "[bold green]Stage 5 complete[/] — %d source regions from %d clusters",

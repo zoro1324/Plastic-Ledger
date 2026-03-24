@@ -6,8 +6,10 @@ import types
 from datetime import datetime
 from pathlib import Path
 
+import geopandas as gpd
 import numpy as np
 import pytest
+from shapely.geometry import Point
 
 backtrack = importlib.import_module("pipeline.05_backtrack")
 
@@ -122,3 +124,56 @@ class TestWindDownload:
         )
 
         assert out is None
+
+
+class TestRunBacktrack:
+    """Regression tests for Stage 5 run orchestration."""
+
+    def test_run_handles_dict_velocity_fields_without_close(self, tmp_path, monkeypatch):
+        """run() should complete when loaders return dict-backed fields."""
+        scene_id = "scene_test"
+        detections_path = tmp_path / "detections.geojson"
+
+        gdf = gpd.GeoDataFrame(
+            {"cluster_id": [1], "is_false_positive": [False]},
+            geometry=[Point(80.5, 7.5)],
+            crs="EPSG:4326",
+        )
+        gdf.to_file(detections_path, driver="GeoJSON")
+
+        monkeypatch.setattr(backtrack, "stage_output_exists", lambda *args, **kwargs: False)
+        monkeypatch.setattr(backtrack, "download_ocean_currents", lambda *args, **kwargs: None)
+        monkeypatch.setattr(backtrack, "download_wind_data", lambda *args, **kwargs: None)
+
+        # Simulate in-memory velocity fields represented as dicts.
+        dummy_field = {
+            "times": np.array([np.datetime64("2026-03-01T00:00:00")], dtype="datetime64[ns]"),
+            "lats": np.array([7.5], dtype=np.float64),
+            "lons": np.array([80.5], dtype=np.float64),
+            "data": {
+                "uo": np.zeros((1, 1, 1), dtype=np.float32),
+                "vo": np.zeros((1, 1, 1), dtype=np.float32),
+                "u10": np.zeros((1, 1, 1), dtype=np.float32),
+                "v10": np.zeros((1, 1, 1), dtype=np.float32),
+            },
+        }
+        monkeypatch.setattr(backtrack, "_load_velocity_field", lambda *args, **kwargs: dummy_field)
+
+        config = {
+            "backtracking": {
+                "days": 0,
+                "n_particles": 2,
+                "time_step_hours": 1.0,
+                "dbscan_min_samples": 1,
+            }
+        }
+
+        sources = backtrack.run(
+            scene_id=scene_id,
+            detections_path=detections_path,
+            output_dir=tmp_path,
+            config=config,
+        )
+
+        assert isinstance(sources, list)
+        assert (tmp_path / scene_id / "backtrack_summary.json").exists()

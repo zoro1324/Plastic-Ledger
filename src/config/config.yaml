@@ -1,6 +1,6 @@
 model:
-  checkpoint: d:/Plastic-Ledger/best-models/best_model_SegTransformer.pth
-  architecture: segformer_b0   # SegFormer-B0 with 11-band input
+  checkpoint: d:/Plastic-Ledger/U-net-models/runs/marida_v1/best_model.pth
+  architecture: unet_smp       # segmentation_models_pytorch U-Net checkpoint
   num_bands: 11
   num_classes: 15
   debris_threshold: 0.10        # Recall-optimised (was 0.15)

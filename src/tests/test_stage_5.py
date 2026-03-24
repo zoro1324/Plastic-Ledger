@@ -1,7 +1,10 @@
 """Tests for Stage 5 — Hydrodynamic Back-Tracking."""
 
 import importlib
+import sys
+import types
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -59,3 +62,63 @@ class TestClusterEndpoints:
         """Empty endpoints should return empty list."""
         sources = backtrack.cluster_endpoints([], eps_degrees=0.5, min_samples=5)
         assert sources == []
+
+
+class TestWindDownload:
+    """Tests for ERA5 wind download setup and fallback."""
+
+    def test_download_wind_data_uses_bounded_cds_client_kwargs(self, tmp_path, monkeypatch):
+        """Client should receive retry/timeout bounds from env when supported."""
+        captured = {}
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def retrieve(self, dataset, request, target):
+                Path(target).write_text("ok", encoding="utf-8")
+
+        fake_mod = types.SimpleNamespace(Client=FakeClient)
+        monkeypatch.setitem(sys.modules, "cdsapi", fake_mod)
+
+        monkeypatch.setenv("CDS_API_KEY", "abc123")
+        monkeypatch.setenv("CDS_API_URL", "https://cds.example/api")
+        monkeypatch.setenv("CDS_RETRY_MAX", "2")
+        monkeypatch.setenv("CDS_SLEEP_MAX", "5")
+        monkeypatch.setenv("CDS_TIMEOUT", "20")
+
+        out = backtrack.download_wind_data(
+            bbox=(80.0, 7.0, 81.0, 8.0),
+            date_start="2026-03-01T00:00:00",
+            date_end="2026-03-02T00:00:00",
+            output_dir=tmp_path,
+        )
+
+        assert out == tmp_path / "wind_data.nc"
+        assert captured["url"] == "https://cds.example/api"
+        assert captured["key"] == "abc123"
+        assert captured["retry_max"] == 2
+        assert captured["sleep_max"] == 5
+        assert captured["timeout"] == 20
+
+    def test_download_wind_data_returns_none_on_retrieve_error(self, tmp_path, monkeypatch):
+        """A CDS client failure should trigger synthetic wind fallback (None)."""
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def retrieve(self, dataset, request, target):
+                raise RuntimeError("DNS resolution failed")
+
+        fake_mod = types.SimpleNamespace(Client=FakeClient)
+        monkeypatch.setitem(sys.modules, "cdsapi", fake_mod)
+
+        out = backtrack.download_wind_data(
+            bbox=(80.0, 7.0, 81.0, 8.0),
+            date_start="2026-03-01T00:00:00",
+            date_end="2026-03-02T00:00:00",
+            output_dir=tmp_path,
+        )
+
+        assert out is None

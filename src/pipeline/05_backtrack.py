@@ -15,6 +15,7 @@ Dependencies: copernicusmarine, cdsapi, numpy, scipy, geopandas, sklearn, xarray
 
 import argparse
 import json
+import inspect
 import os
 import sys
 import warnings
@@ -147,9 +148,42 @@ def download_wind_data(
         if cds_key:
             _cds_kwargs = {"url": cds_url, "key": cds_key}
 
+        # Bound cdsapi internal retries to avoid very long stalls (e.g. DNS outage).
+        # Defaults are intentionally conservative and can be overridden in .env.
+        retry_max = int(os.environ.get("CDS_RETRY_MAX", "3"))
+        sleep_max = int(os.environ.get("CDS_SLEEP_MAX", "10"))
+        timeout = int(os.environ.get("CDS_TIMEOUT", "60"))
+
+        optional_client_kwargs = {
+            "retry_max": max(0, retry_max),
+            "sleep_max": max(1, sleep_max),
+            "timeout": max(1, timeout),
+            "quiet": True,
+            "progress": False,
+        }
+
+        # Keep compatibility with older cdsapi versions by passing only
+        # kwargs present in the installed Client signature.
+        try:
+            sig = inspect.signature(cdsapi.Client.__init__)
+            supports_var_kwargs = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in sig.parameters.values()
+            )
+            if supports_var_kwargs:
+                supported = optional_client_kwargs
+            else:
+                supported = {
+                    k: v for k, v in optional_client_kwargs.items() if k in sig.parameters
+                }
+        except (ValueError, TypeError):
+            supported = {}
+
+        cds_client_kwargs = {**_cds_kwargs, **supported}
+
         @retry_request
         def _download():
-            c = cdsapi.Client(**_cds_kwargs)
+            c = cdsapi.Client(**cds_client_kwargs)
             c.retrieve(
                 "reanalysis-era5-single-levels",
                 {
@@ -178,7 +212,8 @@ def download_wind_data(
         logger.warning(
             "ERA5 download failed: %s — using synthetic wind\n"
             "  Tip: add CDS_API_KEY=<your-key> to your .env file "
-            "(get a key at https://cds.climate.copernicus.eu/profile)",
+            "(get a key at https://cds.climate.copernicus.eu/profile).\n"
+            "  Optional: set CDS_RETRY_MAX, CDS_SLEEP_MAX, CDS_TIMEOUT to limit wait time.",
             exc,
         )
         return None

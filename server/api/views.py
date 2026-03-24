@@ -22,7 +22,7 @@ def execute_pipeline(run_id):
         run_instance.save()
         
         output_dir = PROJECT_ROOT / 'data' / 'runs' / str(run_instance.id)
-        model_path = PROJECT_ROOT / 'models' / 'runs' / 'marida_v1' / 'best_model.pth'
+        model_path = PROJECT_ROOT / 'U-net-models' / 'runs' / 'marida_v1' / 'best_model.pth'
         config_path = SRC_DIR / 'config' / 'config.yaml'
         
         run_instance.output_dir = str(output_dir)

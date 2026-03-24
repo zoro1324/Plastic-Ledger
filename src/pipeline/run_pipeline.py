@@ -9,7 +9,7 @@ Usage:
         --bbox "80.0,8.0,82.0,10.0" \
         --target_date "2024-01-31" \
         --output_dir "data/runs/run_001" \
-        --model_path "models/runs/marida_v1/best_model.pth" \
+    --model_path "d:/Plastic-Ledger/best-models/best_model_SegTransformer.pth" \
         --cloud_cover 20 \
         --backtrack_days 30 \
         --skip_stages ""
@@ -505,8 +505,8 @@ def main():
     )
     parser.add_argument(
         "--model_path", type=str,
-        default=r"d:/Plastic-Ledger/best-models/best_model_SegTransformer.pth",
-        help="Path to trained SegFormer checkpoint (.pth)",
+        default=r"d:/Plastic-Ledger/U-net-models/runs/marida_v1/best_model.pth",
+        help="Path to trained segmentation checkpoint (.pth)",
     )
     parser.add_argument("--cloud_cover", type=int, default=20)
     parser.add_argument("--backtrack_days", type=int, default=30)

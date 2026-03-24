@@ -90,6 +90,10 @@ COPERNICUS_USERNAME=your_email@example.com
 COPERNICUS_PASSWORD=your_password
 GFW_TOKEN=your_global_fishing_watch_token
 CDS_API_KEY=your_climate_data_store_key
+# Optional: cap ERA5/CDS retry behavior (Stage 5)
+CDS_RETRY_MAX=3
+CDS_SLEEP_MAX=10
+CDS_TIMEOUT=60
 ```
 
 > **Note**: The pipeline runs in graceful degradation mode — if API keys are missing, it will

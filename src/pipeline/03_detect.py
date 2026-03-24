@@ -1,17 +1,18 @@
 """
 Plastic-Ledger — Stage 3: Marine Debris Detection
 ====================================================
-Runs the trained MARIDA U-Net model on preprocessed patches and produces
-georeferenced debris detections with TTA and clustering.
+Runs trained segmentation models (SegFormer and U-Net variants) on
+preprocessed patches and produces georeferenced debris detections with
+TTA and clustering.
 
 Usage (standalone):
     python -m pipeline.03_detect \\
         --scene_id SCENE_ID \\
         --patches_dir data/processed/SCENE_ID/patches \\
-        --model_path models/runs/marida_v1/best_model.pth \\
+        --model_path d:/Plastic-Ledger/best-models/best_model_SegTransformer.pth \\
         --output_dir data/detections
 
-Dependencies: torch, segmentation_models_pytorch, rasterio, scipy, geopandas, numpy
+Dependencies: torch, transformers, rasterio, scipy, geopandas, numpy
 """
 
 import argparse
@@ -57,19 +58,95 @@ CLASS_MAP = {
 }
 
 
+def _double_conv_flat(in_ch: int, out_ch: int) -> nn.Sequential:
+    """Conv-BN-ReLU x2 with index layout matching MARIDA official U-Net."""
+    return nn.Sequential(
+        nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=True),
+        nn.BatchNorm2d(out_ch),
+        nn.ReLU(inplace=True),
+        nn.Conv2d(out_ch, out_ch, 3, padding=1, bias=True),
+        nn.BatchNorm2d(out_ch),
+        nn.ReLU(inplace=True),
+    )
+
+
+class _OfficialMaridaUNet(nn.Module):
+    """UNet matching the flat-key official MARIDA checkpoint structure."""
+
+    def __init__(self, in_channels: int = NUM_BANDS, num_classes: int = NUM_CLASSES, hidden: int = 16):
+        super().__init__()
+        h = hidden
+        self.inc = _double_conv_flat(in_channels, h)
+
+        def _down(ic: int, oc: int) -> nn.Sequential:
+            return nn.Sequential(
+                nn.MaxPool2d(2),
+                nn.Conv2d(ic, oc, 3, padding=1, bias=True),
+                nn.BatchNorm2d(oc),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(oc, oc, 3, padding=1, bias=True),
+                nn.BatchNorm2d(oc),
+                nn.ReLU(inplace=True),
+            )
+
+        class Down(nn.Module):
+            def __init__(self, ic: int, oc: int):
+                super().__init__()
+                self.maxpool_conv = _down(ic, oc)
+
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return self.maxpool_conv(x)
+
+        class Up(nn.Module):
+            def __init__(self, ic: int, oc: int):
+                super().__init__()
+                self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+                self.conv = _double_conv_flat(ic, oc)
+
+            def forward(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
+                x1 = self.up(x1)
+                return self.conv(torch.cat([x2, x1], dim=1))
+
+        self.down1 = Down(h, h * 2)
+        self.down2 = Down(h * 2, h * 4)
+        self.down3 = Down(h * 4, h * 8)
+        self.down4 = Down(h * 8, h * 8)
+
+        self.up1 = Up((h * 8) + (h * 8), h * 4)
+        self.up2 = Up((h * 4) + (h * 4), h * 2)
+        self.up3 = Up((h * 2) + (h * 2), h)
+        self.up4 = Up(h + h, h)
+        self.outc = nn.Conv2d(h, num_classes, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+        x = self.up1(x5, x4)
+        x = self.up2(x, x3)
+        x = self.up3(x, x2)
+        x = self.up4(x, x1)
+        return self.outc(x)
+
+
 # ─────────────────────────────────────────────
 # MODEL
 # ─────────────────────────────────────────────
 def load_model(
     checkpoint_path: Union[str, Path],
     device: torch.device,
+    architecture: Optional[str] = None,
 ) -> torch.nn.Module:
-    """Load the trained SegFormer model from a checkpoint.
+    """Load a trained segmentation model checkpoint.
 
-    The checkpoint is a raw ``state_dict`` saved by the training loop in
-    ``SegFormer-Model/train.py``.  The function rebuilds the HuggingFace
-    SegFormer-B0 architecture with an 11-channel patch embedding and loads
-    the weights.
+    Supported architectures:
+      - ``segformer_b0`` / ``segformer``
+      - ``unet_smp`` (segmentation_models_pytorch)
+      - ``unet_official`` (flat-key official MARIDA U-Net)
+
+    If *architecture* is omitted, it is auto-detected from checkpoint keys.
 
     Args:
         checkpoint_path: Path to the ``.pth`` checkpoint file.
@@ -85,38 +162,120 @@ def load_model(
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Model checkpoint not found: {checkpoint_path}")
 
-    # ── Build SegFormer-B0 with 11-channel input ──────────────────────────
-    cfg = SegformerConfig(
-        num_labels=NUM_CLASSES,
-        num_channels=NUM_BANDS,
-        depths=[2, 2, 2, 2],
-        hidden_sizes=[32, 64, 160, 256],
-        decoder_hidden_size=256,
-    )
-    model = SegformerForSemanticSegmentation(cfg)
+    def _extract_state_dict(ckpt_obj: Any) -> Dict[str, torch.Tensor]:
+        if isinstance(ckpt_obj, dict):
+            if "model_state" in ckpt_obj:
+                return ckpt_obj["model_state"]
+            if "state_dict" in ckpt_obj:
+                return ckpt_obj["state_dict"]
+            if "model_state_dict" in ckpt_obj:
+                return ckpt_obj["model_state_dict"]
+            return ckpt_obj
+        return ckpt_obj
 
-    # Overwrite the first patch-embedding Conv to accept 11 bands
-    old = model.segformer.encoder.patch_embeddings[0].proj
-    new_conv = nn.Conv2d(
-        NUM_BANDS, old.out_channels,
-        kernel_size=old.kernel_size,
-        stride=old.stride,
-        padding=old.padding,
-    )
-    nn.init.kaiming_normal_(new_conv.weight)
-    model.segformer.encoder.patch_embeddings[0].proj = new_conv
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    state_dict = _extract_state_dict(checkpoint)
+    state_keys = list(state_dict.keys()) if isinstance(state_dict, dict) else []
 
-    # ── Load weights ────────────────────────────────────────────────────────
-    state_dict = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model.load_state_dict(state_dict, strict=False)  # strict=False tolerates minor key diffs
+    arch = architecture
+    if not arch and isinstance(checkpoint, dict):
+        arch = checkpoint.get("architecture")
+    if not arch and isinstance(checkpoint, dict):
+        encoder_name = str(checkpoint.get("encoder", "")).strip()
+        if encoder_name:
+            arch = "unet_smp"
+    if not arch:
+        if any(k.startswith("segformer.") for k in state_keys):
+            arch = "segformer_b0"
+        elif any(k.startswith("inc.") for k in state_keys) and "outc.weight" in state_dict:
+            arch = "unet_official"
+        elif any(k.startswith("decoder.") for k in state_keys) or any(k.startswith("segmentation_head.") for k in state_keys):
+            arch = "unet_smp"
+        else:
+            arch = "segformer_b0"
+
+    arch = str(arch).lower()
+    if arch in {"segformer", "segformer_b0"}:
+        cfg = SegformerConfig(
+            num_labels=NUM_CLASSES,
+            num_channels=NUM_BANDS,
+            depths=[2, 2, 2, 2],
+            hidden_sizes=[32, 64, 160, 256],
+            decoder_hidden_size=256,
+        )
+        model = SegformerForSemanticSegmentation(cfg)
+
+        old = model.segformer.encoder.patch_embeddings[0].proj
+        new_conv = nn.Conv2d(
+            NUM_BANDS,
+            old.out_channels,
+            kernel_size=old.kernel_size,
+            stride=old.stride,
+            padding=old.padding,
+        )
+        nn.init.kaiming_normal_(new_conv.weight)
+        model.segformer.encoder.patch_embeddings[0].proj = new_conv
+        model.load_state_dict(state_dict, strict=False)
+
+    elif arch in {"unet_smp", "unet", "unet_resnet34"}:
+        try:
+            import segmentation_models_pytorch as smp
+        except ImportError as exc:
+            raise ImportError(
+                "segmentation_models_pytorch is required for SMP U-Net checkpoints."
+            ) from exc
+
+        encoder_name = "resnet34"
+        if isinstance(checkpoint, dict):
+            encoder_name = checkpoint.get("encoder", encoder_name)
+        num_bands = int(checkpoint.get("num_bands", NUM_BANDS)) if isinstance(checkpoint, dict) else NUM_BANDS
+        num_classes = int(checkpoint.get("num_classes", NUM_CLASSES)) if isinstance(checkpoint, dict) else NUM_CLASSES
+
+        model = smp.Unet(
+            encoder_name=encoder_name,
+            encoder_weights=None,
+            in_channels=num_bands,
+            classes=num_classes,
+            activation=None,
+        )
+        model.load_state_dict(state_dict, strict=False)
+
+    elif arch in {"unet_official", "official_unet", "marida_unet"}:
+        if "outc.weight" not in state_dict:
+            raise ValueError("Official U-Net checkpoint missing outc.weight")
+        num_classes = int(state_dict["outc.weight"].shape[0])
+        hidden = int(state_dict["outc.weight"].shape[1])
+        model = _OfficialMaridaUNet(
+            in_channels=NUM_BANDS,
+            num_classes=num_classes,
+            hidden=hidden,
+        )
+        model.load_state_dict(state_dict, strict=True)
+
+    else:
+        raise ValueError(f"Unsupported model architecture: {arch}")
+
     model = model.to(device).float()
     model.eval()
 
     logger.info(
-        "Loaded SegFormer checkpoint: %s  (device=%s, classes=%d, bands=%d)",
-        checkpoint_path.name, device, NUM_CLASSES, NUM_BANDS,
+        "Loaded model checkpoint: %s  (arch=%s, device=%s)",
+        checkpoint_path.name,
+        arch,
+        device,
     )
     return model
+
+
+def _extract_logits(model_output: Any) -> torch.Tensor:
+    """Normalize model outputs to a logits tensor ``(B, C, H, W)``."""
+    if hasattr(model_output, "logits"):
+        return model_output.logits
+    if torch.is_tensor(model_output):
+        return model_output
+    if isinstance(model_output, (tuple, list)) and model_output and torch.is_tensor(model_output[0]):
+        return model_output[0]
+    raise TypeError(f"Unsupported model output type: {type(model_output)}")
 
 
 # ─────────────────────────────────────────────
@@ -211,9 +370,8 @@ def run_tta_inference(
         augmented = _apply_augmentation(patch, aug)
         tensor = torch.from_numpy(augmented).unsqueeze(0).float().to(device)
 
-        # SegFormer returns an object with .logits — shape (1, C, H//4, W//4)
-        out    = model(tensor)
-        logits = out.logits  # (1, num_classes, H', W')
+        out = model(tensor)
+        logits = _extract_logits(out)  # (1, num_classes, H', W')
 
         # ── Debris logit boost — raise the debris channel before softmax ──
         if debris_logit_boost > 0:
@@ -454,10 +612,13 @@ def run(
     threshold = DEFAULT_THRESHOLD
     use_tta = True
     min_area = MIN_CLUSTER_AREA_M2
+    max_area = MAX_CLUSTER_AREA_M2
+    model_arch = None
     if config:
         model_cfg = config.get("model", {})
         threshold = model_cfg.get("debris_threshold", DEFAULT_THRESHOLD)
         use_tta = model_cfg.get("tta", True)
+        model_arch = model_cfg.get("architecture")
         det_cfg = config.get("detection", {})
         min_area = det_cfg.get("min_cluster_area_m2", MIN_CLUSTER_AREA_M2)
         max_area = det_cfg.get("max_cluster_area_m2", MAX_CLUSTER_AREA_M2)
@@ -468,7 +629,7 @@ def run(
 
     # Load model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_model(model_path, device)
+    model = load_model(model_path, device, architecture=model_arch)
 
     # Load patch index
     processed_dir = patches_dir.parent
@@ -612,8 +773,11 @@ def main():
     )
     parser.add_argument("--scene_id", type=str, required=True)
     parser.add_argument("--patches_dir", type=str, required=True)
-    parser.add_argument("--model_path", type=str,
-                        default="models/runs/marida_v1/best_model.pth")
+    parser.add_argument(
+        "--model_path",
+        type=str,
+        default=r"d:/Plastic-Ledger/U-net-models/runs/marida_v1/best_model.pth",
+    )
     parser.add_argument("--output_dir", type=str, default="data/detections")
     parser.add_argument("--config", type=str, default="config/config.yaml")
     args = parser.parse_args()

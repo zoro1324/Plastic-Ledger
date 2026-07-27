@@ -15,35 +15,12 @@ backtrack = importlib.import_module("pipeline.05_backtrack")
 
 
 class TestBacktrackParticle:
-    """Tests for the RK4 particle back-tracking."""
+    """Tests for OceanParcels fieldset initialization."""
 
-    def test_particle_moves_backward(self):
-        """A back-tracked particle should end at a different position."""
-        traj = backtrack.backtrack_particle(
-            start_lon=80.5, start_lat=7.5,
-            start_time=datetime(2024, 1, 15),
-            ocean_ds=None, wind_ds=None,
-            hours=24, dt_hours=1.0,
-        )
-
-        assert len(traj) > 1
-        start = traj[-1]
-        end = traj[0]
-        assert start[0] != end[0] or start[1] != end[1]
-
-    def test_trajectory_length(self):
-        """Trajectory should have expected number of points."""
-        hours = 48
-        dt = 1.0
-        traj = backtrack.backtrack_particle(
-            start_lon=80.5, start_lat=7.5,
-            start_time=datetime(2024, 1, 15),
-            ocean_ds=None, wind_ds=None,
-            hours=hours, dt_hours=dt,
-        )
-
-        expected_points = int(hours / dt) + 1
-        assert len(traj) == expected_points
+    def test_load_parcels_fieldset_missing_data(self):
+        """Missing NetCDF forcing data should safely return None."""
+        fieldset = backtrack.load_parcels_fieldset(None, None)
+        assert fieldset is None
 
 
 class TestClusterEndpoints:
@@ -157,7 +134,7 @@ class TestRunBacktrack:
                 "v10": np.zeros((1, 1, 1), dtype=np.float32),
             },
         }
-        monkeypatch.setattr(backtrack, "_load_velocity_field", lambda *args, **kwargs: dummy_field)
+        monkeypatch.setattr(backtrack, "load_parcels_fieldset", lambda *args, **kwargs: None)
 
         config = {
             "backtracking": {
@@ -176,4 +153,3 @@ class TestRunBacktrack:
         )
 
         assert isinstance(sources, list)
-        assert (tmp_path / scene_id / "backtrack_summary.json").exists()

@@ -75,6 +75,7 @@ def run_pipeline(
     skip_stages: Set[int] = None,
     cleanup_patches: bool = False,
     config_path: str = None,    # None → resolved relative to this file
+    filter_by_bbox: bool = True,
 ) -> Dict[str, Any]:
     """Run the complete Plastic-Ledger pipeline.
 
@@ -88,6 +89,9 @@ def run_pipeline(
         skip_stages: Set of stage numbers (1–7) to skip.
         cleanup_patches: If True, delete Stage 2 patch cache after Stage 4.
         config_path: Path to YAML config file.
+        filter_by_bbox: If True (default), Stage 3 only runs inference on
+            patches that intersect the bbox. Set to False to process the
+            entire satellite tile (all ~2400 patches).
 
     Returns:
         Dict with run summary including output paths and metrics.
@@ -269,6 +273,7 @@ def run_pipeline(
                     model_path=str(model_path),
                     output_dir=str(detections_dir),
                     config=config,
+                    bbox=bbox if filter_by_bbox else None,
                 )
                 run_summary["stages_completed"].append(3)
             except Exception as exc:
@@ -528,6 +533,12 @@ def main():
         "--config", type=str, default=None,
         help="Path to config.yaml (default: src/config/config.yaml)",
     )
+    parser.add_argument(
+        "--no-bbox-filter", action="store_true", dest="no_bbox_filter",
+        help="Disable bbox spatial filtering in Stage 3. When set, the model "
+             "runs on ALL patches in the full satellite tile, not just those "
+             "within the bbox. Useful for full-scene evaluation.",
+    )
     args = parser.parse_args()
 
     bbox = tuple(float(x) for x in args.bbox.split(","))
@@ -545,6 +556,7 @@ def main():
         skip_stages=skip,
         cleanup_patches=args.cleanup_patches,
         config_path=args.config,
+        filter_by_bbox=not args.no_bbox_filter,
     )
 
 

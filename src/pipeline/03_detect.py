@@ -185,14 +185,25 @@ def load_model(
         if encoder_name:
             arch = "unet_smp"
     if not arch:
-        if any(k.startswith("segformer.") for k in state_keys):
+        if any(k.startswith("segformer.stages.") for k in state_keys):
+            # B2 pretrained structure — uses .stages not .encoder
+            arch = "segformer_b2"
+        elif any(k.startswith("segformer.encoder.") for k in state_keys):
+            # B0 scratch structure — uses .encoder
             arch = "segformer_b0"
         elif any(k.startswith("inc.") for k in state_keys) and "outc.weight" in state_dict:
             arch = "unet_official"
         elif any(k.startswith("decoder.") for k in state_keys) or any(k.startswith("segmentation_head.") for k in state_keys):
             arch = "unet_smp"
         else:
-            arch = "segformer_b0"
+            # Last resort: detect from classifier head hidden size
+            cls_w = state_dict.get("decode_head.classifier.weight") if isinstance(state_dict, dict) else None
+            if cls_w is not None:
+                hidden = cls_w.shape[1]
+                arch = "segformer_b2" if hidden >= 512 else "segformer_b0"
+                logger.info("Detected arch from classifier shape: hidden=%d → %s", hidden, arch)
+            else:
+                arch = "segformer_b0"
 
     arch = str(arch).lower()
     if arch in {"segformer_b2"}:
@@ -427,6 +438,7 @@ def _load_patch_array(patch_path: Path) -> np.ndarray:
 # ─────────────────────────────────────────────
 def stitch_patches(
     predictions: List[np.ndarray],
+    patch_ids: List[str],
     patch_index: Dict[str, Dict],
     scene_shape: Tuple[int, int],
     num_classes: int = NUM_CLASSES,
@@ -437,6 +449,7 @@ def stitch_patches(
 
     Args:
         predictions: List of ``(num_classes, H, W)`` probability arrays.
+        patch_ids: List of patch IDs corresponding to predictions.
         patch_index: Patch index dict mapping patch_id → info.
         scene_shape: ``(height, width)`` of the original scene.
         num_classes: Number of output classes.
@@ -448,7 +461,6 @@ def stitch_patches(
     prob_sum = np.zeros((num_classes, h, w), dtype=np.float16)
     count = np.zeros((h, w), dtype=np.float16)
 
-    patch_ids = sorted(patch_index.keys())
     for patch_id, pred in zip(patch_ids, predictions):
         info = patch_index[patch_id]
         rs = info["row_start"]
@@ -605,6 +617,7 @@ def run(
     model_path: Union[str, Path],
     output_dir: Union[str, Path] = "data/detections",
     config: Optional[Dict] = None,
+    bbox: Optional[Tuple[float, float, float, float]] = None,
 ) -> Path:
     """Run the full detection stage for one scene.
 
@@ -693,6 +706,55 @@ def run(
 
     predictions = []
     patch_ids = sorted(patch_index.keys())
+    
+    # Filter patches by bbox if provided
+    if bbox:
+        try:
+            from pyproj import Transformer
+            from shapely.geometry import box
+            logger.info("Filtering patches with bbox=%s", bbox)
+            
+            filtered_ids = []
+            for pid in patch_ids:
+                info = patch_index[pid]
+                geo_transform = info.get("geo_transform")
+                crs = info.get("crs")
+                if not geo_transform or not crs:
+                    filtered_ids.append(pid)
+                    continue
+                    
+                col_start = info.get("col_start", 0)
+                row_start = info.get("row_start", 0)
+                
+                minx = geo_transform[2] + col_start * geo_transform[0]
+                maxy = geo_transform[5] + row_start * geo_transform[4]
+                maxx = minx + info.get("actual_w", 256) * geo_transform[0]
+                miny = maxy + info.get("actual_h", 256) * geo_transform[4]
+                minx, maxx = min(minx, maxx), max(minx, maxx)
+                miny, maxy = min(miny, maxy), max(miny, maxy)
+                patch_box = box(minx, miny, maxx, maxy)
+                
+                transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+                bl_x, bl_y = transformer.transform(bbox[0], bbox[1])
+                tr_x, tr_y = transformer.transform(bbox[2], bbox[3])
+                tl_x, tl_y = transformer.transform(bbox[0], bbox[3])
+                br_x, br_y = transformer.transform(bbox[2], bbox[1])
+                
+                user_minx = min(bl_x, tr_x, tl_x, br_x)
+                user_maxx = max(bl_x, tr_x, tl_x, br_x)
+                user_miny = min(bl_y, tr_y, tl_y, br_y)
+                user_maxy = max(bl_y, tr_y, tl_y, br_y)
+                user_box = box(user_minx, user_miny, user_maxx, user_maxy)
+                
+                if patch_box.intersects(user_box):
+                    filtered_ids.append(pid)
+                    
+            logger.info("Retained %d out of %d patches within bbox", len(filtered_ids), len(patch_ids))
+            patch_ids = filtered_ids
+        except ImportError:
+            logger.warning("pyproj or shapely not found, cannot filter patches by bbox")
+    else:
+        logger.info("No bbox provided for detection, processing all %d patches", len(patch_ids))
 
     for i, patch_id in enumerate(patch_ids):
         info = patch_index.get(patch_id, {})
@@ -720,11 +782,21 @@ def run(
 
     # Stitch predictions
     logger.info("Stitching %d patch predictions into full scene", len(predictions))
-    full_probs = stitch_patches(predictions, patch_index, scene_shape)
+    full_probs = stitch_patches(predictions, patch_ids, patch_index, scene_shape)
 
     # Generate masks
     debris_prob = full_probs[DEBRIS_CLASS_INDEX]
     class_mask = full_probs.argmax(axis=0).astype(np.uint8)
+
+    # Apply land mask filter if available
+    land_mask_path = processed_dir / "land_mask.npy"
+    if land_mask_path.exists():
+        land_mask = np.load(land_mask_path)
+        if land_mask.shape == debris_prob.shape:
+            land_pixels_count = int(land_mask.sum())
+            logger.info("Applying land mask filter (%d land pixels masked out)", land_pixels_count)
+            debris_prob[land_mask] = 0.0
+
     debris_mask = (debris_prob > threshold) & (class_mask == DEBRIS_CLASS_INDEX)
 
     # Save outputs

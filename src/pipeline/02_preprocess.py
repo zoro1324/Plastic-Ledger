@@ -259,6 +259,48 @@ def normalize_scene(
     return image, nodata_mask
 
 
+def compute_land_mask(
+    image: np.ndarray,
+    ndwi_threshold: float = 0.15,
+    mndwi_threshold: float = 0.05,
+    dilate_pixels: int = 3,
+) -> np.ndarray:
+    """Compute boolean land mask using NDWI and MNDWI spectral indices with shoreline dilation.
+
+    Args:
+        image: ``(11, H, W)`` Sentinel-2 array (reflectance range 0..1).
+        ndwi_threshold: Threshold above which pixel is classified as water.
+        mndwi_threshold: Threshold above which pixel is classified as water.
+        dilate_pixels: Number of pixels to dilate land mask into coastline boundary.
+
+    Returns:
+        Boolean mask of shape ``(H, W)`` where True = land/shoreline, False = water.
+    """
+    from scipy.ndimage import binary_dilation
+
+    b03 = image[2].astype(np.float32)  # Green
+    b08 = image[7].astype(np.float32)  # NIR
+    b11 = image[9].astype(np.float32)  # SWIR 1
+
+    # Avoid division by zero
+    ndwi_denom = b03 + b08
+    ndwi_denom = np.where(ndwi_denom == 0, 1e-6, ndwi_denom)
+    ndwi = (b03 - b08) / ndwi_denom
+
+    mndwi_denom = b03 + b11
+    mndwi_denom = np.where(mndwi_denom == 0, 1e-6, mndwi_denom)
+    mndwi = (b03 - b11) / mndwi_denom
+
+    # Land pixels: pixels where NDWI <= threshold OR MNDWI <= threshold
+    is_water = (ndwi > ndwi_threshold) & (mndwi > mndwi_threshold)
+    land_mask = ~is_water
+
+    if dilate_pixels > 0:
+        land_mask = binary_dilation(land_mask, iterations=dilate_pixels)
+
+    return land_mask
+
+
 # ─────────────────────────────────────────────
 # TILING
 # ─────────────────────────────────────────────
@@ -425,6 +467,14 @@ def run(
     nodata_path = out_dir / "nodata_mask.npy"
     np.save(nodata_path, nodata_mask)
 
+    # Compute and save land mask
+    ndwi_thresh = pre_cfg.get("ndwi_threshold", 0.05) if config else 0.05
+    mndwi_thresh = pre_cfg.get("mndwi_threshold", 0.00) if config else 0.00
+    land_mask = compute_land_mask(image, ndwi_threshold=ndwi_thresh, mndwi_threshold=mndwi_thresh)
+    land_mask_path = out_dir / "land_mask.npy"
+    np.save(land_mask_path, land_mask)
+    logger.info("Land mask generated: %d land pixels (%.2f%%)", land_mask.sum(), 100.0 * land_mask.sum() / land_mask.size)
+
     # Tile
     logger.info(
         "Tiling into %dx%d patches with %d overlap",
@@ -483,6 +533,7 @@ def run(
             "geo_transform": geo_transform_list,
             "crs": crs_str,
             "nodata_mask_path": str(nodata_path),
+            "land_mask_path": str(land_mask_path),
         }
 
     # Log patch statistics from sampled patches

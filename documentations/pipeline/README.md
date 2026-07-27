@@ -59,19 +59,21 @@ Plastic-Ledger automatically:
 ║  │  STAGE 2 — Preprocessing                       pipeline/02_preprocess.py│    ║
 ║  │                                                                          │    ║
 ║  │  ● 8 bands → 11-band model order (zero-pad B01, B06, B07)               │    ║
-║  │  ● Clip [0.0001, 0.5] → Z-score normalise (MARIDA stats)                │    ║
+║  │  ● DN offset correction + reflectance scaling                            │    ║
+║  │  ● NDWI + MNDWI land mask calculation + 3-pixel shoreline dilation      │    ║
 ║  │  ● Tile into 256×256 patches, 32-pixel overlap                          │    ║
-║  │  ● Output: data/processed/<SCENE>/patches/patch_NNNN.npz                │    ║
+║  │  ● Output: data/processed/<SCENE>/patches/patch_NNNN.npz + land_mask.npy │    ║
 ║  └─────────────────────────────────────────────────────────────────────────┘    ║
 ║                                         │                                        ║
 ║                                         ▼                                        ║
 ║  ┌─────────────────────────────────────────────────────────────────────────┐    ║
 ║  │  STAGE 3 — Marine Debris Detection (Deep Learning)  pipeline/03_detect.py│   ║
 ║  │                                                                          │    ║
-║  │  ● U-Net (ResNet-34) trained on MARIDA → 15-class segmentation          │    ║
+║  │  ● SegFormer_v2 (MixVisionTransformer B2) trained on MARIDA_BALANCED     │    ║
+║  │  ● Model Checkpoint: models/production/best_model_SegFormer_v2.pth       │    ║
 ║  │  ● Test-Time Augmentation (6 flips/rotations) → averaged probabilities  │    ║
-║  │  ● Patch stitching with overlap averaging                                │    ║
-║  │  ● Threshold + argmax → debris mask → connected components              │    ║
+║  │  ● Land mask suppression: prob_map[DEBRIS, land_mask] = 0.0              │    ║
+║  │  ● Unboosted logits (LOGIT_BOOST = 0.0) → threshold + argmax             │    ║
 ║  │  ● Output: detections.geojson + debris_mask.tif + debris_prob.tif       │    ║
 ║  └─────────────────────────────────────────────────────────────────────────┘    ║
 ║                                         │                                        ║

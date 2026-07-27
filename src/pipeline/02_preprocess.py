@@ -468,9 +468,10 @@ def run(
     np.save(nodata_path, nodata_mask)
 
     # Compute and save land mask
-    ndwi_thresh = pre_cfg.get("ndwi_threshold", 0.05) if config else 0.05
-    mndwi_thresh = pre_cfg.get("mndwi_threshold", 0.00) if config else 0.00
-    land_mask = compute_land_mask(image, ndwi_threshold=ndwi_thresh, mndwi_threshold=mndwi_thresh)
+    ndwi_thresh  = pre_cfg.get("ndwi_threshold", 0.15) if config else 0.15
+    mndwi_thresh = pre_cfg.get("mndwi_threshold", 0.05) if config else 0.05
+    dilate_px    = pre_cfg.get("dilate_pixels", 3) if config else 3
+    land_mask    = compute_land_mask(image, ndwi_threshold=ndwi_thresh, mndwi_threshold=mndwi_thresh, dilate_pixels=dilate_px)
     land_mask_path = out_dir / "land_mask.npy"
     np.save(land_mask_path, land_mask)
     logger.info("Land mask generated: %d land pixels (%.2f%%)", land_mask.sum(), 100.0 * land_mask.sum() / land_mask.size)

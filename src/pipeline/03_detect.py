@@ -41,10 +41,10 @@ logger = get_logger(__name__)
 # ─────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────
-NUM_CLASSES = 15
-NUM_BANDS = 11
+NUM_CLASSES = 11
+NUM_BANDS   = 11
 DEBRIS_CLASS_INDEX = 0
-DEFAULT_THRESHOLD = 0.10        # Lowered from 0.15 → improves recall for sparse debris
+DEFAULT_THRESHOLD  = 0.10        # Lowered from 0.15 → improves recall for sparse debris
 DEBRIS_LOGIT_BOOST = 0.5       # Added to the raw debris logit before softmax
 MIN_CLUSTER_AREA_M2 = 100          # 4 pixels at 10m resolution
 MAX_CLUSTER_AREA_M2 = 50_000_000   # 50 km² — anything larger is a false positive
@@ -198,18 +198,21 @@ def load_model(
         else:
             # Last resort: detect from classifier head hidden size
             cls_w = state_dict.get("decode_head.classifier.weight") if isinstance(state_dict, dict) else None
-            if cls_w is not None:
+            if cls_w is not None and hasattr(cls_w, "shape"):
                 hidden = cls_w.shape[1]
                 arch = "segformer_b2" if hidden >= 512 else "segformer_b0"
-                logger.info("Detected arch from classifier shape: hidden=%d → %s", hidden, arch)
-            else:
-                arch = "segformer_b0"
+
+    num_cls = NUM_CLASSES
+    cls_w = state_dict.get("decode_head.classifier.weight") if isinstance(state_dict, dict) else None
+    if cls_w is not None and hasattr(cls_w, "shape"):
+        num_cls = cls_w.shape[0]
+        logger.info("Detected checkpoint shape: %d output classes → %s", num_cls, arch)
 
     arch = str(arch).lower()
     if arch in {"segformer_b2"}:
         model = SegformerForSemanticSegmentation.from_pretrained(
             "nvidia/segformer-b2-finetuned-ade-512-512",
-            num_labels=NUM_CLASSES,
+            num_labels=num_cls,
             ignore_mismatched_sizes=True
         )
         old_conv = model.segformer.stages[0].patch_embeddings.proj
@@ -441,7 +444,7 @@ def stitch_patches(
     patch_ids: List[str],
     patch_index: Dict[str, Dict],
     scene_shape: Tuple[int, int],
-    num_classes: int = NUM_CLASSES,
+    num_classes: Optional[int] = None,
 ) -> np.ndarray:
     """Stitch patch predictions back into a full-scene probability map.
 
@@ -457,6 +460,11 @@ def stitch_patches(
     Returns:
         ``(num_classes, H, W)`` full-scene probability map.
     """
+    if num_classes is None and predictions:
+        num_classes = predictions[0].shape[0]
+    elif num_classes is None:
+        num_classes = NUM_CLASSES
+
     h, w = scene_shape
     prob_sum = np.zeros((num_classes, h, w), dtype=np.float16)
     count = np.zeros((h, w), dtype=np.float16)
@@ -650,6 +658,7 @@ def run(
     # Settings
     threshold = DEFAULT_THRESHOLD
     use_tta = True
+    debris_logit_boost = 0.0
     min_area = MIN_CLUSTER_AREA_M2
     max_area = MAX_CLUSTER_AREA_M2
     model_arch = None
@@ -657,6 +666,7 @@ def run(
         model_cfg = config.get("model", {})
         threshold = model_cfg.get("debris_threshold", DEFAULT_THRESHOLD)
         use_tta = model_cfg.get("tta", True)
+        debris_logit_boost = model_cfg.get("debris_logit_boost", 0.0)
         model_arch = model_cfg.get("architecture")
         det_cfg = config.get("detection", {})
         min_area = det_cfg.get("min_cluster_area_m2", MIN_CLUSTER_AREA_M2)
@@ -774,7 +784,7 @@ def run(
             continue
 
         patch = _load_patch_array(patch_path)
-        prob_map = run_tta_inference(model, patch, device, use_tta=use_tta)
+        prob_map = run_tta_inference(model, patch, device, use_tta=use_tta, debris_logit_boost=debris_logit_boost)
         predictions.append(prob_map)
 
         if (i + 1) % 50 == 0 or i == len(patch_ids) - 1:

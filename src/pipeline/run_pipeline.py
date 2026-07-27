@@ -516,7 +516,7 @@ def main():
     )
     parser.add_argument(
         "--model_path", type=str,
-        default=r"d:/Plastic-Ledger/models/unet/runs/marida_v1/best_model.pth",
+        default="models/production/best_model_SegFormer_v2.pth",
         help="Path to trained segmentation checkpoint (.pth)",
     )
     parser.add_argument("--cloud_cover", type=int, default=20)

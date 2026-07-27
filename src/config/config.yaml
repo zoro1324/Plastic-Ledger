@@ -2,7 +2,7 @@ model:
   checkpoint: models/production/best_model_SegFormer_v2.pth
   architecture: segformer_b2       # SegFormer B2 checkpoint
   num_bands: 11
-  num_classes: 15
+  num_classes: 11
   debris_threshold: 0.10        # Recall-optimised
   debris_logit_boost: 0.0       # Unboosted logits (prevents coastal false positives)
   tta: true

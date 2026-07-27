@@ -62,7 +62,7 @@ NUM_CLASSES = 15
 NUM_BANDS   = 11
 DEBRIS_CLASS = 0
 THRESHOLD   = 0.10
-LOGIT_BOOST = 0.5
+LOGIT_BOOST = 0.0
 PATCH_SIZE  = 256
 OVERLAP     = 32
 
@@ -178,29 +178,62 @@ def preprocess_scene(scene_dir: Path) -> Tuple[np.ndarray, Any, Any]:
                 arr = ndimage_zoom(arr, zf, order=1)
             image[i] = arr
 
-    # normalization - identical to normalize_scene() in 02_preprocess.py
+    # In-place memory-efficient normalization (prevents ArrayMemoryError on 10980x10980 tiles)
     nodata_mask = (image.sum(axis=0) == 0)
-    image = np.where(~nodata_mask, image - 1000.0, 0.0)  # Copernicus DN offset
-    image = np.clip(image, 0.0, None)
-    image = image / 10000.0                               # reflectance
+    image[:, ~nodata_mask] -= 1000.0  # Copernicus DN offset in-place
+    np.clip(image, 0.0, None, out=image)
+    image /= 10000.0                   # reflectance in-place
     image[:, nodata_mask] = 0.0
-    image = np.clip(image, 0.0, 1.0)
-    image = np.nan_to_num(image, nan=0.0, posinf=1.0, neginf=0.0)
+    np.clip(image, 0.0, 1.0, out=image)
+    np.nan_to_num(image, copy=False, nan=0.0, posinf=1.0, neginf=0.0)
 
     transform = ref_profile.get("transform")
     crs       = ref_profile.get("crs")
-    return image, transform, crs
+    
+    # Compute NDWI/MNDWI land mask
+    land_mask = compute_land_mask(image)
+    return image, transform, crs, land_mask
+
+
+def compute_land_mask(
+    image: np.ndarray,
+    ndwi_threshold: float = 0.15,
+    mndwi_threshold: float = 0.05,
+    dilate_pixels: int = 3,
+) -> np.ndarray:
+    """Compute boolean land mask using NDWI and MNDWI spectral indices with shoreline dilation.
+    True = Land/Coastline, False = Water.
+    """
+    from scipy.ndimage import binary_dilation
+
+    b03 = image[2].astype(np.float32)  # Green
+    b08 = image[7].astype(np.float32)  # NIR
+    b11 = image[9].astype(np.float32)  # SWIR 1
+
+    ndwi_denom = np.maximum(b03 + b08, 1e-6)
+    ndwi = (b03 - b08) / ndwi_denom
+
+    mndwi_denom = np.maximum(b03 + b11, 1e-6)
+    mndwi = (b03 - b11) / mndwi_denom
+
+    is_water = (ndwi > ndwi_threshold) & (mndwi > mndwi_threshold)
+    land_mask = ~is_water
+
+    if dilate_pixels > 0:
+        land_mask = binary_dilation(land_mask, iterations=dilate_pixels)
+
+    return land_mask
 
 
 # ==============================================================================
 # STAGE 2b - TILING  (identical to tile_scene() in 02_preprocess.py)
 # ==============================================================================
 
-def tile_scene(image: np.ndarray) -> Tuple[List[np.ndarray], List[Dict[str, Any]]]:
+def tile_scene(image: np.ndarray, land_mask: np.ndarray = None) -> Tuple[List[np.ndarray], List[np.ndarray], List[Dict[str, Any]]]:
     """Tile (11, H, W) array into overlapping 256x256 patches."""
     _, h, w = image.shape
     stride  = PATCH_SIZE - OVERLAP
-    patches, infos = [], []
+    patches, mask_patches, infos = [], [], []
     r_idx, row = 0, 0
     while row < h:
         c_idx, col = 0, 0
@@ -208,10 +241,16 @@ def tile_scene(image: np.ndarray) -> Tuple[List[np.ndarray], List[Dict[str, Any]
             row_end = min(row + PATCH_SIZE, h)
             col_end = min(col + PATCH_SIZE, w)
             patch   = np.zeros((NUM_BANDS, PATCH_SIZE, PATCH_SIZE), dtype=np.float32)
+            mask_patch = np.ones((PATCH_SIZE, PATCH_SIZE), dtype=bool) if land_mask is not None else None
+            
             ah = row_end - row
             aw = col_end - col
             patch[:, :ah, :aw] = image[:, row:row_end, col:col_end]
+            if land_mask is not None:
+                mask_patch[:ah, :aw] = land_mask[row:row_end, col:col_end]
+
             patches.append(patch)
+            mask_patches.append(mask_patch)
             infos.append({"row": r_idx, "col": c_idx,
                            "row_start": row, "col_start": col,
                            "actual_h": ah, "actual_w": aw})
@@ -219,10 +258,10 @@ def tile_scene(image: np.ndarray) -> Tuple[List[np.ndarray], List[Dict[str, Any]
             if col_end >= w: break
         row += stride; r_idx += 1
         if row_end >= h: break
-    return patches, infos
+    return patches, mask_patches, infos
 
 
-def filter_patches_by_bbox(patches, infos, bbox, transform, crs):
+def filter_patches_by_bbox(patches, mask_patches, infos, bbox, transform, crs):
     """Identical bbox filter logic to 03_detect.py"""
     try:
         from pyproj import Transformer
@@ -235,8 +274,8 @@ def filter_patches_by_bbox(patches, infos, bbox, transform, crs):
         user_box = shapely_box(min(xs), min(ys), max(xs), max(ys))
         tf = [transform.a, transform.b, transform.c,
               transform.d, transform.e, transform.f]
-        kept_p, kept_i = [], []
-        for patch, info in zip(patches, infos):
+        kept_p, kept_m, kept_i = [], [], []
+        for patch, mask_patch, info in zip(patches, mask_patches, infos):
             minx = tf[2] + info["col_start"] * tf[0]
             maxy = tf[5] + info["row_start"] * tf[4]
             maxx = minx + info["actual_w"] * tf[0]
@@ -244,12 +283,13 @@ def filter_patches_by_bbox(patches, infos, bbox, transform, crs):
             pb = shapely_box(min(minx,maxx), min(miny,maxy), max(minx,maxx), max(miny,maxy))
             if pb.intersects(user_box):
                 kept_p.append(patch)
+                kept_m.append(mask_patch)
                 kept_i.append(info)
         print(f"[filter] Retained {len(kept_p)}/{len(patches)} patches within bbox")
-        return kept_p, kept_i
+        return kept_p, kept_m, kept_i
     except ImportError:
         print("[filter] pyproj/shapely not available - using all patches")
-        return patches, infos
+        return patches, mask_patches, infos
 
 
 # ==============================================================================
@@ -295,16 +335,34 @@ def load_model(model_path: Path, device: torch.device) -> torch.nn.Module:
     arch = arch.lower()
     print(f"[model] Architecture: {arch}")
 
+    # Detect number of classes dynamically from checkpoint state dict
+    num_classes = NUM_CLASSES
+    if isinstance(sd, dict):
+        cls_w = None
+        for k in ["decode_head.classifier.weight", "classifier.weight", "outc.weight"]:
+            if k in sd:
+                cls_w = sd[k]
+                break
+        if cls_w is not None:
+            num_classes = cls_w.shape[0]
+            print(f"[model] Detected {num_classes} output classes from checkpoint shape.")
+
     if arch == "segformer_b2":
+        config = SegformerConfig.from_pretrained("nvidia/segformer-b2-finetuned-ade-512-512")
+        config.num_labels = num_classes
+        config.id2label = {i: str(i) for i in range(num_classes)}
+        config.label2id = {str(i): i for i in range(num_classes)}
         model = SegformerForSemanticSegmentation.from_pretrained(
             "nvidia/segformer-b2-finetuned-ade-512-512",
-            num_labels=NUM_CLASSES, ignore_mismatched_sizes=True)
+            config=config,
+            ignore_mismatched_sizes=True
+        )
         old = model.segformer.stages[0].patch_embeddings.proj
         model.segformer.stages[0].patch_embeddings.proj = nn.Conv2d(
             NUM_BANDS, old.out_channels, old.kernel_size, old.stride, old.padding,
             bias=(old.bias is not None))
         model.config.num_channels = NUM_BANDS
-        model.load_state_dict(sd, strict=False)
+        model.load_state_dict(sd, strict=True)
     elif arch in {"segformer_b0", "segformer"}:
         cfg = SegformerConfig(num_labels=NUM_CLASSES, num_channels=NUM_BANDS,
                               depths=[2,2,2,2], hidden_sizes=[32,64,160,256],
@@ -373,10 +431,14 @@ def run_tta_inference(model, patch, device):
     return acc / len(augs)
 
 
-def run_inference_on_patches(model, patches, device):
+def run_inference_on_patches(model, patches, mask_patches, device):
     prob_maps = []
-    for i, patch in enumerate(patches):
-        prob_maps.append(run_tta_inference(model, patch, device))
+    for i, (patch, mask_patch) in enumerate(zip(patches, mask_patches)):
+        prob_map = run_tta_inference(model, patch, device)
+        if mask_patch is not None:
+            # Zero out marine debris probability on land/shoreline pixels (NDWI/MNDWI mask)
+            prob_map[DEBRIS_CLASS, mask_patch] = 0.0
+        prob_maps.append(prob_map)
         if (i+1) % 5 == 0 or i == len(patches)-1:
             print(f"  Inference: {i+1}/{len(patches)} patches")
     return prob_maps
@@ -432,7 +494,28 @@ def make_rgb(patch: np.ndarray) -> np.ndarray:
     return (np.clip(rgb_f, 0, 1) * 255).astype(np.uint8)
 
 
-def save_visualization(patch, prob_map, label, info, output_path):
+def compute_spectral_indices(patch: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute Floating Debris Index (FDI) and Plastic Index (PI) for spectral verification.
+    
+    FDI (Biermann et al. 2020):
+        FDI = B8A - [B08 + (B11 - B08) * ((865 - 842) / (1610 - 842)) * 1.61]
+    
+    PI (Themistocleous et al. 2020 / Kikaki et al. 2022):
+        PI = B08 / (B08 + B04 + 1e-6)
+    """
+    b04 = patch[3].astype(np.float32)   # B04 Red (665 nm)
+    b08 = patch[7].astype(np.float32)   # B08 NIR (842 nm)
+    b8a = patch[8].astype(np.float32)   # B8A NIR Narrow (865 nm)
+    b11 = patch[9].astype(np.float32)   # B11 SWIR 1 (1610 nm)
+
+    lambda_scale = (865.0 - 842.0) / (1610.0 - 842.0)
+    nir_prime = b08 + (b11 - b08) * lambda_scale * 1.61
+    fdi = b8a - nir_prime
+    pi = b08 / (b08 + b04 + 1e-6)
+    return fdi, pi
+
+
+def save_visualization(patch, prob_map, label, info, output_path) -> Dict[str, float]:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -442,13 +525,38 @@ def save_visualization(patch, prob_map, label, info, output_path):
     pred_cls = prob_map.argmax(axis=0)
     pred_rgb = colorise_pred(pred_cls)
     dp       = prob_map[DEBRIS_CLASS]
-    n_debris = int(((dp > THRESHOLD) & (pred_cls == DEBRIS_CLASS)).sum())
+    debris_mask = (dp > THRESHOLD) & (pred_cls == DEBRIS_CLASS)
+    n_debris = int(debris_mask.sum())
+
+    # Compute spectral indices for verification
+    fdi_map, pi_map = compute_spectral_indices(patch)
+    
+    spectral_stats = {
+        "debris_fdi_mean": 0.0,
+        "debris_fdi_max": 0.0,
+        "debris_pi_mean": 0.0,
+        "water_fdi_mean": 0.0,
+    }
+
+    if n_debris > 0:
+        spectral_stats["debris_fdi_mean"] = round(float(fdi_map[debris_mask].mean()), 5)
+        spectral_stats["debris_fdi_max"]  = round(float(fdi_map[debris_mask].max()), 5)
+        spectral_stats["debris_pi_mean"]   = round(float(pi_map[debris_mask].mean()), 4)
+
+    water_mask = (pred_cls != DEBRIS_CLASS) & (patch.sum(axis=0) > 0)
+    if water_mask.any():
+        spectral_stats["water_fdi_mean"]  = round(float(fdi_map[water_mask].mean()), 5)
+
+    fdi_str = (f"FDI (Debris Mean): {spectral_stats['debris_fdi_mean']:+.5f} | "
+               f"FDI (Water Mean): {spectral_stats['water_fdi_mean']:+.5f} | "
+               f"PI: {spectral_stats['debris_pi_mean']:.4f}" if n_debris > 0
+               else f"FDI (Water Mean): {spectral_stats['water_fdi_mean']:+.5f}")
 
     title = (f"Row {info['row_start']} | Col {info['col_start']} | "
-             f"Debris pixels: {n_debris} | {label}")
+             f"Debris pixels: {n_debris} | {label}\n{fdi_str}")
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-    fig.suptitle(title, fontsize=11, fontweight="bold", y=1.01)
+    fig, axes = plt.subplots(1, 2, figsize=(13, 6))
+    fig.suptitle(title, fontsize=10, fontweight="bold", y=0.98)
 
     axes[0].imshow(rgb_img)
     axes[0].set_title("RGB (B04/B03/B02)", fontsize=10, fontweight="bold")
@@ -474,7 +582,8 @@ def save_visualization(patch, prob_map, label, info, output_path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
-    print(f"  Saved: {output_path.name}")
+    print(f"  Saved: {output_path.name} ({fdi_str})")
+    return spectral_stats
 
 
 # ==============================================================================
@@ -495,6 +604,9 @@ def main():
                         default=str(_project_root / "ml_training_2.0" / "pipeline_eval"))
     parser.add_argument("--no-download", action="store_true", dest="no_download",
                         help="Skip download if scene already exists in output_dir/raw/")
+    parser.add_argument("--all-patches", action="store_true", dest="all_patches",
+                        help="Visualise ALL patches within the bbox, not just 3. "
+                             "Useful to inspect every retained patch.")
     args = parser.parse_args()
 
     bbox = tuple(float(x) for x in args.bbox.split(","))
@@ -530,17 +642,18 @@ def main():
         scene_dir, scene_id = download_scene(bbox, args.date, output_dir, args.cloud_cover)
 
     # Stage 2: Preprocess
-    print("\n[Stage 2] Preprocessing (band reorder + DN offset + reflectance) ...")
-    image, transform, crs = preprocess_scene(scene_dir)
+    print("\n[Stage 2] Preprocessing (band reorder + DN offset + reflectance + NDWI land mask) ...")
+    image, transform, crs, land_mask = preprocess_scene(scene_dir)
     print(f"[Stage 2] Shape {image.shape}, range [{image.min():.4f}, {image.max():.4f}]")
+    print(f"[Stage 2] Land mask computed: {land_mask.sum()} land pixels ({land_mask.mean()*100:.1f}%)")
 
     # Stage 2b: Tile
     print("[Stage 2] Tiling 256x256 patches (overlap=32) ...")
-    patches, infos = tile_scene(image)
+    patches, mask_patches, infos = tile_scene(image, land_mask)
     print(f"[Stage 2] Total patches: {len(patches)}")
 
     if crs:
-        patches, infos = filter_patches_by_bbox(patches, infos, bbox, transform, crs)
+        patches, mask_patches, infos = filter_patches_by_bbox(patches, mask_patches, infos, bbox, transform, crs)
     else:
         print("[filter] No CRS - using all patches")
 
@@ -551,30 +664,58 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n[Stage 3] Loading model on {device} ...")
     model = load_model(model_path, device)
-    print(f"[Stage 3] Running TTA inference on {len(patches)} patches ...")
-    prob_maps = run_inference_on_patches(model, patches, device)
+    print(f"[Stage 3] Running TTA inference + NDWI land masking on {len(patches)} patches ...")
+    prob_maps = run_inference_on_patches(model, patches, mask_patches, device)
 
     # Select patches
-    print("\n[Select] Choosing representative patches ...")
-    selection = select_patches(patches, prob_maps, n_debris=1, n_no_debris=2)
+    print("\n[Select] Choosing patches to visualise ...")
+    if args.all_patches:
+        # Sort all patches: debris first (highest count), then no-debris
+        counts = []
+        for i, pm in enumerate(prob_maps):
+            dp  = pm[DEBRIS_CLASS]
+            cm  = pm.argmax(axis=0)
+            cnt = int(((dp > THRESHOLD) & (cm == DEBRIS_CLASS)).sum())
+            counts.append((cnt, i))
+        counts.sort(key=lambda x: x[0], reverse=True)
+        all_selected = []
+        d_n, nd_n = 0, 0
+        for cnt, idx in counts:
+            if cnt > 0:
+                all_selected.append((idx, f"DEBRIS DETECTED ({cnt} px)"))
+                d_n += 1
+            else:
+                all_selected.append((idx, "No Debris"))
+                nd_n += 1
+        print(f"[select] All {len(all_selected)} patches: {d_n} with debris, {nd_n} without")
+    else:
+        selection = select_patches(patches, prob_maps, n_debris=1, n_no_debris=2)
+        all_selected = ([(idx, "DEBRIS DETECTED") for idx in selection["debris"]] +
+                        [(idx, "No Debris")        for idx in selection["no_debris"]])
 
     # Visualise
     print("\n[Visualise] Saving PNGs ...")
-    visuals_dir  = output_dir / "visuals"
-    all_selected = ([(idx, "DEBRIS DETECTED") for idx in selection["debris"]] +
-                    [(idx, "No Debris")        for idx in selection["no_debris"]])
+    visuals_dir = output_dir / "visuals"
 
     summary_records = []
+    debris_counter, no_debris_counter = 0, 0
     for k, (idx, label) in enumerate(all_selected):
-        tag       = "debris"   if "DEBRIS" in label else f"no_debris_{k - len(selection['debris'])}"
+        is_debris = "DEBRIS" in label
+        if is_debris:
+            tag = f"debris_{debris_counter}"; debris_counter += 1
+        else:
+            tag = f"no_debris_{no_debris_counter}"; no_debris_counter += 1
         out_path  = visuals_dir / f"{scene_id}_{tag}.png"
         pm        = prob_maps[idx]
         n_d       = int(((pm[DEBRIS_CLASS] > THRESHOLD) & (pm.argmax(0) == DEBRIS_CLASS)).sum())
-        save_visualization(patches[idx], pm, label, infos[idx], out_path)
-        summary_records.append({"tag": tag, "debris_pixels": n_d,
-                                 "row_start": infos[idx]["row_start"],
-                                 "col_start": infos[idx]["col_start"],
-                                 "png": str(out_path)})
+        spec_stats = save_visualization(patches[idx], pm, label, infos[idx], out_path)
+        
+        rec = {"tag": tag, "debris_pixels": n_d,
+               "row_start": infos[idx]["row_start"],
+               "col_start": infos[idx]["col_start"],
+               "png": str(out_path)}
+        rec.update(spec_stats)
+        summary_records.append(rec)
 
     # Summary JSON
     summary = {"scene_id": scene_id, "bbox": list(bbox), "date": args.date,

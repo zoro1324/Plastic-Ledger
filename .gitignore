@@ -49,3 +49,5 @@ node_modules/
 dist/
 
 pipeline_eval/
+
+eval_results/

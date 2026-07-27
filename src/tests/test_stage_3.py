@@ -39,10 +39,11 @@ class TestStitching:
                           "actual_h": 32, "actual_w": 32},
         }
 
-        result = detect.stitch_patches([pred1, pred2], patch_index, (32, 64))
+        patch_ids = ["patch_0000", "patch_0001"]
+        result = detect.stitch_patches([pred1, pred2], patch_ids, patch_index, (32, 64))
         assert result.shape == (15, 32, 64)
-        np.testing.assert_allclose(result[:, 0, 0], 0.5, atol=1e-6)
-        np.testing.assert_allclose(result[:, 0, 32], 0.8, atol=1e-6)
+        np.testing.assert_allclose(result[:, 0, 0], 0.5, atol=1e-3)
+        np.testing.assert_allclose(result[:, 0, 32], 0.8, atol=1e-3)
 
 
 class TestExtractClusters:

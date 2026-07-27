@@ -16,9 +16,9 @@ Stage 3 is the core machine-learning inference stage. It loads a trained **SegFo
 |-----------|------|-------------|
 | `scene_id` | `str` | Identifier of the scene being processed |
 | `patches_dir` | `Path` | Directory containing `patch_NNNN.npy/.npz` files (from Stage 2) |
-| `model_path` | `Path` | Path to the trained `.pth` model checkpoint |
+| `model_path` | `Path` | Path to `models/production/best_model_SegFormer_v2.pth` |
 | `output_dir` | `Path` | Root directory for detection outputs (default: `data/detections`) |
-| `config` | `dict` | Optional config with threshold, TTA flag, min area settings |
+| `config` | `dict` | Config with `debris_threshold` (0.10), `debris_logit_boost` (0.0), `tta` (true), `enable_land_masking` (true) |
 
 ---
 

@@ -1,10 +1,10 @@
 model:
-  checkpoint: d:/Plastic-Ledger/models/unet/runs/marida_v1/best_model.pth
+  checkpoint: models/production/best_model_SegFormer_v2.pth
   architecture: segformer_b2       # SegFormer B2 checkpoint
   num_bands: 11
   num_classes: 15
-  debris_threshold: 0.10        # Recall-optimised (was 0.15)
-  debris_logit_boost: 0.5       # Logit boost for Marine Debris channel
+  debris_threshold: 0.10        # Recall-optimised
+  debris_logit_boost: 0.0       # Unboosted logits (prevents coastal false positives)
   tta: true
 
 preprocessing:
@@ -12,8 +12,9 @@ preprocessing:
   overlap: 32
   patch_storage: npz
   patch_dtype: float16
-  ndwi_threshold: 0.05
-  mndwi_threshold: 0.00
+  ndwi_threshold: 0.15
+  mndwi_threshold: 0.05
+  dilate_pixels: 3
   enable_land_masking: true
   band_means: [0.057, 0.054, 0.046, 0.036, 0.033, 0.041, 0.049, 0.043, 0.050, 0.031, 0.019]
   band_stds:  [0.010, 0.010, 0.013, 0.010, 0.012, 0.020, 0.030, 0.020, 0.030, 0.020, 0.013]

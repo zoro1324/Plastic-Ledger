@@ -8,10 +8,11 @@
 
 Stage 2 transforms raw Sentinel-2 per-band GeoTIFFs (from Stage 1) into **model-ready 256×256 overlapping patches**. The process includes:
 
-1. Loading and reordering 8 available bands into the 11-band model input format (zero-padding missing bands)
+1. Loading and reordering 8 available bands into the 11-band model input format (zero-padding missing bands B01, B06, B07)
 2. Applying Copernicus Collection 1 baseline corrections (subtracting the +1000 DN offset) and scaling to raw reflectance [0, 1]
-3. Tiling the full scene into overlapping patches
-4. Saving patches as `.npy` / `.npz` files with a geo-index
+3. **Computing NDWI ($\frac{B03-B08}{B03+B08} > 0.15$) & MNDWI ($\frac{B03-B11}{B03+B11} > 0.05$) Land Mask** with **3-pixel morphological shoreline dilation** to mask out coastal land and intertidal transition pixels
+4. Tiling the full scene into overlapping patches
+5. Saving patches as `.npy` / `.npz` files along with `land_mask.npy` and a geo-index
 
 ---
 
@@ -21,7 +22,7 @@ Stage 2 transforms raw Sentinel-2 per-band GeoTIFFs (from Stage 1) into **model-
 |-----------|------|-------------|
 | `scene_dir` | `Path` | Raw scene directory from Stage 1 containing `<BAND>.tif` files |
 | `output_dir` | `Path` | Root output directory (default: `data/processed`) |
-| `config` | `dict` | Optional config with `patch_size`, `overlap`, `patch_storage`, `patch_dtype` |
+| `config` | `dict` | Optional config with `patch_size`, `overlap`, `ndwi_threshold` (0.15), `mndwi_threshold` (0.05), `dilate_pixels` (3) |
 
 ---
 
@@ -33,7 +34,8 @@ data/processed/<SCENE_ID>/
 │   ├── patch_0000.npy   (or .npz)
 │   ├── patch_0001.npy
 │   └── ...
-├── patch_index.json     # Geo-coordinates and pixel offsets for every patch
+├── patch_index.json     # Geo-coordinates, pixel offsets, and land_mask_path for every patch
+├── land_mask.npy        # Boolean mask (H×W) of land and dilated coastal boundary pixels
 ├── nodata_mask.npy      # Boolean mask (H×W) of all-zero pixels
 └── scene_meta.json      # Original shape, CRS, transform, patch settings
 ```

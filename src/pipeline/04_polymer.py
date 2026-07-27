@@ -34,8 +34,8 @@ logger = get_logger(__name__)
 # ── Polymer Model (XGBoost / RF) ──────────────────────────────────────────
 # Default location for the trained models, label map,
 # and feature list produced by train_xgboost_polymer.py / train_polymer_model.py
-_DEFAULT_RF_MODEL_DIR = Path(r"d:\Plastic-Ledger\models\polymer")
-XGB_MODEL_PATH  = _DEFAULT_RF_MODEL_DIR / "polymer_xgb_model.json"
+_DEFAULT_RF_MODEL_DIR = Path(r"d:\Plastic-Ledger\models\production")
+XGB_MODEL_PATH  = _DEFAULT_RF_MODEL_DIR / "polymer_xgb_model.pkl"
 RF_MODEL_PATH   = _DEFAULT_RF_MODEL_DIR / "polymer_rf_model.pkl"
 RF_LABEL_PATH   = _DEFAULT_RF_MODEL_DIR / "polymer_label_map.json"
 RF_FEATURE_PATH = _DEFAULT_RF_MODEL_DIR / "polymer_feature_names.json"
@@ -82,9 +82,8 @@ def load_polymer_model():
             
         # Try XGBoost first
         if XGB_MODEL_PATH.exists():
-            import xgboost as xgb
-            xgb_model = xgb.Booster()
-            xgb_model.load_model(XGB_MODEL_PATH)
+            import joblib
+            xgb_model = joblib.load(XGB_MODEL_PATH)
             logger.info("Loaded XGBoost polymer model: %d classes, %d features", len(label_map), len(feature_names))
             return xgb_model, "xgb", id_to_class, feature_names
 
@@ -127,10 +126,17 @@ def classify_cluster_ml(
         "nm705": 4, "nm740": 5, "nm783": 6, "nm842": 7,
         "nm865": 8, "nm1600": 9, "nm2200": 10,
     }
-    feat_vec = np.array(
-        [spectrum[MARIDA_TO_BAND_IDX.get(fn, 0)] for fn in feature_names],
-        dtype=np.float32,
-    ).reshape(1, -1)
+    indices_dict = None
+    feat_vals = []
+    for fn in feature_names:
+        if fn in MARIDA_TO_BAND_IDX:
+            feat_vals.append(spectrum[MARIDA_TO_BAND_IDX[fn]])
+        else:
+            if indices_dict is None:
+                indices_dict = compute_spectral_indices(spectrum)
+            feat_vals.append(indices_dict[fn.lower()])
+
+    feat_vec = np.array(feat_vals, dtype=np.float32).reshape(1, -1)
 
     if model_type == "xgb":
         import xgboost as xgb

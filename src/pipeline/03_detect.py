@@ -787,6 +787,16 @@ def run(
     # Generate masks
     debris_prob = full_probs[DEBRIS_CLASS_INDEX]
     class_mask = full_probs.argmax(axis=0).astype(np.uint8)
+
+    # Apply land mask filter if available
+    land_mask_path = processed_dir / "land_mask.npy"
+    if land_mask_path.exists():
+        land_mask = np.load(land_mask_path)
+        if land_mask.shape == debris_prob.shape:
+            land_pixels_count = int(land_mask.sum())
+            logger.info("Applying land mask filter (%d land pixels masked out)", land_pixels_count)
+            debris_prob[land_mask] = 0.0
+
     debris_mask = (debris_prob > threshold) & (class_mask == DEBRIS_CLASS_INDEX)
 
     # Save outputs

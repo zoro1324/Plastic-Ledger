@@ -237,6 +237,12 @@ def load_parcels_fieldset(
     try:
         import xarray as xr
         
+        # Clear any stale file locks/caches from previous runs in the process
+        try:
+            xr.backends.file_manager.FILE_CACHE.clear()
+        except Exception:
+            pass
+        
         # Determine time dimension name dynamically
         def get_time_dim(nc_path):
             with xr.open_dataset(nc_path) as ds:

@@ -441,7 +441,7 @@ def run_custom_backtrack_verification(
 
     mean_origin_lon = float(np.mean(ep_lons))
     mean_origin_lat = float(np.mean(ep_lats))
-    min_lon, max_lon = float(np.min(ep_lons)), float(np.max(ep_lats))
+    min_lon, max_lon = float(np.min(ep_lons)), float(np.max(ep_lons))
     min_lat, max_lat = float(np.min(ep_lats)), float(np.max(ep_lats))
 
     drift_distance_km = haversine_km(lat, lon, mean_origin_lat, mean_origin_lon)
@@ -555,46 +555,129 @@ def run_custom_backtrack_verification(
         except Exception:
             pass
 
+    # Generate Interactive Leaflet HTML Map & 4-Panel Matplotlib Dashboard
+    try:
+        try:
+            from verification.generate_visualizations import generate_leaflet_map, generate_matplotlib_dashboard
+        except ImportError:
+            from generate_visualizations import generate_leaflet_map, generate_matplotlib_dashboard
+            
+        html_map_path = generate_leaflet_map(output_dir)
+        dashboard_path = generate_matplotlib_dashboard(output_dir)
+    except Exception as exc:
+        print(f"Visualization generation note: {exc}")
+
     print("\n" + "=" * 75)
     print("BACKTRACKING VERIFICATION COMPLETE!")
     print("=" * 75)
     print(f"Backtracked Origin Centroid: Lat {mean_origin_lat:.5f}° N, Lon {mean_origin_lon:.5f}° E")
     print(f"Net Drift Distance:           {drift_distance_km:.2f} km")
     print(f"Particle Bounding Box:        [{min_lon:.5f}, {min_lat:.5f}, {max_lon:.5f}, {max_lat:.5f}]")
+    print(f"Interactive Map:              {output_dir / 'backtrack_map.html'}")
+    print(f"Publication Chart:            {output_dir / 'backtrack_dashboard.png'}")
     print(f"Saved artifacts to:           {output_dir}")
     print("=" * 75)
     return summary_results
 
 
-def run_monte_carlo_analysis():
-    """Run Monte Carlo convergence scale analysis across particle scales (100, 500, 1000)."""
+def run_monte_carlo_analysis(
+    output_dir: Path = PROJECT_ROOT / "data" / "benchmarks" / "benchmark_run_2",
+    lat: float = 41.18162,
+    lon: float = 2.24084,
+    start_str: str = "2022-03-09T18:11:00+01:00",
+    end_str: str = "2022-03-14T18:11:00+01:00",
+    plastic_type: str = "generic",
+    integrator: str = "RK4",
+    kh: float = 1.5,
+):
+    """Run Monte Carlo convergence scale analysis across particle scales (100, 500, 1000) using process isolation."""
     scales = [100, 500, 1000]
     mc_results = []
     print("\n" + "=" * 75)
     print("RUNNING MONTE CARLO PARTICLE SCALE CONVERGENCE ANALYSIS")
+    print(f"Target Output Directory: {output_dir}")
     print("=" * 75)
     
+    script_path = str(Path(__file__).resolve())
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
     for n in scales:
+        print(f"\n>>> Running Subprocess for Particle Scale N = {n} <<<\n")
         start_t = datetime.now()
-        res = run_custom_backtrack_verification(n_particles=n)
+        cmd = [
+            sys.executable,
+            script_path,
+            f"--n_particles={n}",
+            f"--output_dir={output_dir}",
+            f"--lat={lat}",
+            f"--lon={lon}",
+            f"--start_str={start_str}",
+            f"--end_str={end_str}",
+            f"--plastic_type={plastic_type}",
+            f"--integrator={integrator}",
+            f"--kh={kh}",
+        ]
+        subprocess.run(cmd, check=True)
         runtime_sec = (datetime.now() - start_t).total_seconds()
         
+        summary_file = output_dir / "backtrack_summary.json"
+        with open(summary_file) as f:
+            res = json.load(f)
+            
+        centroid = res.get("backtracked_origin_centroid", {})
         mc_results.append({
             "n_particles": n,
-            "centroid_lon": res["backtracked_origin_centroid"]["longitude"],
-            "centroid_lat": res["backtracked_origin_centroid"]["latitude"],
-            "drift_distance_km": res["net_backtrack_drift_distance_km"],
+            "centroid_lon": centroid.get("longitude"),
+            "centroid_lat": centroid.get("latitude"),
+            "drift_distance_km": res.get("net_backtrack_drift_distance_km"),
             "runtime_seconds": runtime_sec,
         })
         
-    mc_dir = PROJECT_ROOT / "data" / "verification_custom"
-    with open(mc_dir / "monte_carlo_report.json", "w") as f:
+    with open(output_dir / "monte_carlo_report.json", "w") as f:
         json.dump(mc_results, f, indent=2)
-    print(f"\nSaved Monte Carlo convergence report to {mc_dir / 'monte_carlo_report.json'}")
+    print("\n" + "=" * 75)
+    print(f"MONTE CARLO CONVERGENCE REPORT GENERATED SUCCESSFULLY!")
+    print(f"Saved report to: {output_dir / 'monte_carlo_report.json'}")
+    print("=" * 75)
 
 
 if __name__ == "__main__":
-    if "--monte-carlo" in sys.argv:
-        run_monte_carlo_analysis()
+    import argparse
+    parser = argparse.ArgumentParser(description="Plastic-Ledger Backtracking Verification & Benchmark Runner")
+    parser.add_argument("--lat", type=float, default=41.18162, help="Release latitude")
+    parser.add_argument("--lon", type=float, default=2.24084, help="Release longitude")
+    parser.add_argument("--start_str", type=str, default="2022-03-09T18:11:00+01:00", help="Target origin start datetime ISO")
+    parser.add_argument("--end_str", type=str, default="2022-03-14T18:11:00+01:00", help="Release end datetime ISO")
+    parser.add_argument("--n_particles", type=int, default=100, help="Number of particles")
+    parser.add_argument("--plastic_type", type=str, default="generic", help="Debris type (bottle, fishing_net, rope, foam, generic)")
+    parser.add_argument("--integrator", type=str, default="RK4", help="Advection integrator (RK4, RK45, Euler)")
+    parser.add_argument("--kh", type=float, default=1.5, help="Horizontal diffusion Kh in m^2/s")
+    parser.add_argument("--output_dir", type=str, default="data/benchmarks/benchmark_run_2", help="Directory to save benchmark output artifacts")
+    parser.add_argument("--monte-carlo", action="store_true", help="Run multi-scale Monte Carlo analysis (100, 500, 1000 particles)")
+    args = parser.parse_args()
+
+    out_path = Path(args.output_dir)
+
+    if args.monte_carlo:
+        run_monte_carlo_analysis(
+            output_dir=out_path,
+            lat=args.lat,
+            lon=args.lon,
+            start_str=args.start_str,
+            end_str=args.end_str,
+            plastic_type=args.plastic_type,
+            integrator=args.integrator,
+            kh=args.kh,
+        )
     else:
-        run_custom_backtrack_verification()
+        run_custom_backtrack_verification(
+            lat=args.lat,
+            lon=args.lon,
+            start_str=args.start_str,
+            end_str=args.end_str,
+            n_particles=args.n_particles,
+            plastic_type=args.plastic_type,
+            integrator=args.integrator,
+            kh=args.kh,
+            output_dir=out_path,
+        )

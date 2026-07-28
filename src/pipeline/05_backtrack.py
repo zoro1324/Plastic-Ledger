@@ -29,17 +29,23 @@ import geopandas as gpd
 from shapely.geometry import LineString, Point, MultiPoint, box
 from sklearn.cluster import DBSCAN
 
-from parcels import FieldSet, ParticleSet, JITParticle, ScipyParticle, AdvectionRK4, Variable
+from parcels import (
+    FieldSet,
+    ParticleSet,
+    JITParticle,
+    ScipyParticle,
+    AdvectionRK4,
+    AdvectionRK45,
+    AdvectionEE,
+    Variable,
+    ParcelsRandom,
+)
 
 from pipeline.utils.logging_utils import get_logger
 from pipeline.utils.geo_utils import expand_bbox, retry_request
 from pipeline.utils.cache_utils import load_config, stage_output_exists
 
 logger = get_logger(__name__)
-
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", message=".*'where' used without 'out'.*")
-warnings.filterwarnings("ignore", message=".*no explicit representation of timezones available.*")
 
 # ─────────────────────────────────────────────
 # OCEAN CURRENT DATA
@@ -50,20 +56,7 @@ def download_ocean_currents(
     date_end: str,
     output_dir: Path,
 ) -> Optional[Path]:
-    """Download CMEMS global ocean surface current data.
-
-    Args:
-        bbox: ``(lon_min, lat_min, lon_max, lat_max)``.
-        date_start: Start date ISO string.
-        date_end: End date ISO string.
-        output_dir: Directory to save the NetCDF file.
-
-    Returns:
-        Path to the downloaded NetCDF, or ``None`` if download fails.
-
-    Raises:
-        ImportError: If ``copernicusmarine`` is not installed.
-    """
+    """Download CMEMS global ocean surface current data."""
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / "ocean_currents.nc"
 
@@ -74,7 +67,6 @@ def download_ocean_currents(
     try:
         import copernicusmarine as cm
 
-        # Map .env credential names to what copernicusmarine reads
         if os.environ.get("COPERNICUS_USERNAME"):
             os.environ["COPERNICUSMARINE_SERVICE_USERNAME"] = os.environ["COPERNICUS_USERNAME"]
         if os.environ.get("COPERNICUS_PASSWORD"):
@@ -116,20 +108,7 @@ def download_wind_data(
     date_end: str,
     output_dir: Path,
 ) -> Optional[Path]:
-    """Download ERA5 10m wind components.
-
-    Args:
-        bbox: ``(lon_min, lat_min, lon_max, lat_max)``.
-        date_start: Start date ISO string.
-        date_end: End date ISO string.
-        output_dir: Directory to save the NetCDF file.
-
-    Returns:
-        Path to the downloaded NetCDF, or ``None`` if download fails.
-
-    Raises:
-        ImportError: If ``cdsapi`` is not installed.
-    """
+    """Download ERA5 10m wind components."""
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / "wind_data.nc"
 
@@ -140,19 +119,12 @@ def download_wind_data(
     try:
         import cdsapi
 
-        # Support credentials from .env:  CDS_API_KEY and optionally CDS_API_URL.
-        # The new CDS-Beta endpoint uses a bare API key; the legacy endpoint uses
-        # the "UID:API-KEY" format.  Both work when passed directly to the Client.
         _cds_kwargs: dict = {}
         cds_key = os.environ.get("CDS_API_KEY")
-        cds_url = os.environ.get(
-            "CDS_API_URL", "https://cds.climate.copernicus.eu/api"
-        )
+        cds_url = os.environ.get("CDS_API_URL", "https://cds.climate.copernicus.eu/api")
         if cds_key:
             _cds_kwargs = {"url": cds_url, "key": cds_key}
 
-        # Bound cdsapi internal retries to avoid very long stalls (e.g. DNS outage).
-        # Defaults are intentionally conservative and can be overridden in .env.
         retry_max = int(os.environ.get("CDS_RETRY_MAX", "3"))
         sleep_max = int(os.environ.get("CDS_SLEEP_MAX", "10"))
         timeout = int(os.environ.get("CDS_TIMEOUT", "60"))
@@ -165,20 +137,15 @@ def download_wind_data(
             "progress": False,
         }
 
-        # Keep compatibility with older cdsapi versions by passing only
-        # kwargs present in the installed Client signature.
         try:
             sig = inspect.signature(cdsapi.Client.__init__)
             supports_var_kwargs = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD
-                for p in sig.parameters.values()
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
             )
             if supports_var_kwargs:
                 supported = optional_client_kwargs
             else:
-                supported = {
-                    k: v for k, v in optional_client_kwargs.items() if k in sig.parameters
-                }
+                supported = {k: v for k, v in optional_client_kwargs.items() if k in sig.parameters}
         except (ValueError, TypeError):
             supported = {}
 
@@ -195,8 +162,7 @@ def download_wind_data(
                         "10m_u_component_of_wind",
                         "10m_v_component_of_wind",
                     ],
-                    "area": [bbox[3], bbox[0], bbox[1], bbox[2]],  # N, W, S, E
-                    # ERA5 requires plain YYYY-MM-DD; strip any time/tz component
+                    "area": [bbox[3], bbox[0], bbox[1], bbox[2]],
                     "date": f"{date_start[:10]}/{date_end[:10]}",
                     "time": [f"{h:02d}:00" for h in range(24)],
                     "format": "netcdf",
@@ -212,20 +178,57 @@ def download_wind_data(
         logger.error("cdsapi not installed — ERA5 download failed")
         return None
     except Exception as exc:
-        logger.error(
-            "ERA5 download failed: %s\n"
-            "  Tip: add CDS_API_KEY=<your-key> to your .env file "
-            "(get a key at https://cds.climate.copernicus.eu/profile).\n"
-            "  Optional: set CDS_RETRY_MAX, CDS_SLEEP_MAX, CDS_TIMEOUT to limit wait time.",
-            exc,
-        )
+        logger.error("ERA5 download failed: %s", exc)
         return None
+
+
+# ─────────────────────────────────────────────
+# PLASTIC PARTICLE CLASS & WINDAGE LOOKUP
+# ─────────────────────────────────────────────
+class PlasticParticle(ScipyParticle):
+    """Custom Parcels particle with dynamic plastic-type windage coefficient."""
+    windage = Variable('windage', initial=0.03, dtype=np.float32)
+
+
+def get_windage_for_plastic_type(plastic_type: str, config: Optional[Dict] = None) -> float:
+    """Return aerodynamic windage coefficient based on debris type."""
+    mapping = {
+        "bottle": 0.03,
+        "fishing_net": 0.015,
+        "rope": 0.02,
+        "foam": 0.05,
+        "generic": 0.03,
+        "marine debris (plastic)": 0.03,
+    }
+    if config and "backtracking" in config and "plastic_windage" in config["backtracking"]:
+        for k, v in config["backtracking"]["plastic_windage"].items():
+            mapping[str(k).lower()] = float(v)
+    
+    key = str(plastic_type).lower()
+    for k, v in mapping.items():
+        if k in key:
+            return float(v)
+    return 0.03
+
+
+def get_integrator_kernel(integrator_name: str):
+    """Return appropriate OceanParcels advection scheme."""
+    name = str(integrator_name).upper().strip()
+    if name in ["RK45", "ADVECTIONRK45"]:
+        return AdvectionRK45
+    elif name in ["EULER", "EE", "ADVECTIONEE"]:
+        return AdvectionEE
+    return AdvectionRK4
 
 
 # ─────────────────────────────────────────────
 # OCEANPARCELS SETUP & KERNELS
 # ─────────────────────────────────────────────
-def load_parcels_fieldset(ocean_nc: Optional[Path], wind_nc: Optional[Path]) -> Optional[FieldSet]:
+def load_parcels_fieldset(
+    ocean_nc: Optional[Path],
+    wind_nc: Optional[Path],
+    kh: float = 0.0,
+) -> Optional[FieldSet]:
     """Load CMEMS and ERA5 NetCDF files into a combined OceanParcels FieldSet."""
     if not ocean_nc or not ocean_nc.exists() or not wind_nc or not wind_nc.exists():
         logger.error("Missing forcing data for OceanParcels.")
@@ -262,24 +265,129 @@ def load_parcels_fieldset(ocean_nc: Optional[Path], wind_nc: Optional[Path]) -> 
         fieldset.add_field(wind_fieldset.U_wind)
         fieldset.add_field(wind_fieldset.V_wind)
         
+        # Add horizontal diffusion coefficient parameter Kh
+        if kh > 0.0:
+            fieldset.add_constant('Kh', kh)
+        
         return fieldset
     except Exception as e:
         logger.warning(f"Failed to create FieldSet: {e}")
         return None
 
-def StokesDriftWindage(particle, fieldset, time):
-    """Custom Parcels Kernel for 3% wind drift (Stokes drift approximation)."""
-    # math is imported automatically in Parcels kernels, but we need to calculate degrees
+
+def DirectWindageKernel(particle, fieldset, time):
+    """Applies a direct windage coefficient to floating particles.
+    
+    This is NOT physical Stokes drift.
+    It approximates the aerodynamic drag experienced by floating debris based on 10m wind fields.
+    """
     u_wind = fieldset.U_wind[time, particle.depth, particle.lat, particle.lon]
     v_wind = fieldset.V_wind[time, particle.depth, particle.lat, particle.lon]
     
-    # Approx degrees per meter
     lat_dist = 111000.0
     lon_dist = 111000.0 * math.cos(particle.lat * math.pi / 180.0)
     
-    # 0.03 is the 3% windage
-    particle_dlon += (u_wind * 0.03 / lon_dist) * particle.dt
-    particle_dlat += (v_wind * 0.03 / lat_dist) * particle.dt
+    # Apply particle-specific windage coefficient (default 0.03)
+    w_coeff = particle.windage if hasattr(particle, "windage") else 0.03
+    particle_dlon += (u_wind * w_coeff / lon_dist) * particle.dt
+    particle_dlat += (v_wind * w_coeff / lat_dist) * particle.dt
+
+
+def BrownianDiffusion2D(particle, fieldset, time):
+    """Applies 2D horizontal stochastic random walk diffusion (Kh in m^2/s)."""
+    kh = fieldset.Kh
+    if kh > 0.0:
+        dt_abs = math.fabs(particle.dt)
+        lat_dist = 111000.0
+        lon_dist = 111000.0 * math.cos(particle.lat * math.pi / 180.0)
+        
+        # High-quality uniform pseudo-random hash generator (avoids C compiler/GCC requirement)
+        s1 = math.sin(particle.id * 12.9898 + time * 78.233) * 43758.5453
+        r1 = s1 - math.floor(s1)
+        s2 = math.sin((particle.id + 1.0) * 12.9898 + (time + 1.0) * 78.233) * 43758.5453
+        r2 = s2 - math.floor(s2)
+        
+        u1 = max(0.0001, min(0.9999, r1))
+        u2 = max(0.0001, min(0.9999, r2))
+        
+        # Box-Muller transform to Gaussian normal distribution
+        r_lon = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
+        r_lat = math.sqrt(-2.0 * math.log(u1)) * math.sin(2.0 * math.pi * u2)
+        
+        step_scale = math.sqrt(2.0 * kh * dt_abs)
+        particle_dlon += (r_lon * step_scale / lon_dist)
+        particle_dlat += (r_lat * step_scale / lat_dist)
+
+
+def compute_ensemble_statistics(lons_array: np.ndarray, lats_array: np.ndarray) -> List[Dict[str, Any]]:
+    """Compute per-timestep spatial statistics across all particles."""
+    n_trajs, n_obs = lons_array.shape
+    stats_list = []
+    
+    for t in range(n_obs):
+        t_lons = lons_array[:, t]
+        t_lats = lats_array[:, t]
+        valid_mask = ~np.isnan(t_lons) & ~np.isnan(t_lats)
+        v_lons = t_lons[valid_mask]
+        v_lats = t_lats[valid_mask]
+        
+        if len(v_lons) == 0:
+            continue
+            
+        m_lon, m_lat = float(np.mean(v_lons)), float(np.mean(v_lats))
+        std_lon, std_lat = float(np.std(v_lons)), float(np.std(v_lats))
+        
+        cov_matrix = np.cov(v_lons, v_lats).tolist() if len(v_lons) > 1 else [[0.0, 0.0], [0.0, 0.0]]
+        
+        # 95% confidence ellipse semi-axes
+        if len(v_lons) > 2:
+            cov = np.cov(v_lons, v_lats)
+            eigenvals, eigenvecs = np.linalg.eigh(cov)
+            order = eigenvals.argsort()[::-1]
+            eigenvals = eigenvals[order]
+            eigenvecs = eigenvecs[:, order]
+            angle = np.degrees(np.arctan2(*eigenvecs[:, 0][::-1]))
+            # 5.991 for 95% confidence chi-squared 2 d.o.f
+            semi_major = float(np.sqrt(5.991 * max(0.0, eigenvals[0])))
+            semi_minor = float(np.sqrt(5.991 * max(0.0, eigenvals[1])))
+        else:
+            semi_major, semi_minor, angle = 0.0, 0.0, 0.0
+
+        # Convex hull area in km2
+        convex_hull_area = 0.0
+        if len(v_lons) >= 3:
+            pts = list(zip(v_lons, v_lats))
+            try:
+                hull = MultiPoint(pts).convex_hull
+                # Approx area conversion deg2 to km2 at mean latitude
+                km_per_lat = 111.0
+                km_per_lon = 111.0 * math.cos(math.radians(m_lat))
+                convex_hull_area = float(hull.area * km_per_lat * km_per_lon)
+            except Exception:
+                convex_hull_area = 0.0
+
+        # Mean particle spread radius (km) from mean centroid
+        km_per_lat = 111.0
+        km_per_lon = 111.0 * math.cos(math.radians(m_lat))
+        dists = np.sqrt(((v_lons - m_lon) * km_per_lon)**2 + ((v_lats - m_lat) * km_per_lat)**2)
+        spread_radius_km = float(np.mean(dists))
+        
+        stats_list.append({
+            "timestep_idx": t,
+            "n_active_particles": int(len(v_lons)),
+            "mean_lon": m_lon,
+            "mean_lat": m_lat,
+            "std_lon": std_lon,
+            "std_lat": std_lat,
+            "covariance_matrix": cov_matrix,
+            "ellipse_semi_major_deg": semi_major,
+            "ellipse_semi_minor_deg": semi_minor,
+            "ellipse_angle_deg": float(angle),
+            "convex_hull_area_km2": convex_hull_area,
+            "particle_spread_radius_km": spread_radius_km,
+        })
+        
+    return stats_list
 
 # ─────────────────────────────────────────────
 # ENDPOINT CLUSTERING
@@ -382,19 +490,26 @@ def run(
     bt_days = 30
     n_particles = 50
     dt_hours = 1.0
-    ocean_wind_ratio = (0.97, 0.03)
     eps_degrees = 0.5
     min_samples = 5
+    integrator_name = "RK4"
+    kh = 0.0
+    plastic_type = "generic"
 
     if config:
         bt_cfg = config.get("backtracking", {})
         bt_days = bt_cfg.get("days", 30)
         n_particles = bt_cfg.get("n_particles", 50)
         dt_hours = bt_cfg.get("time_step_hours", 1.0)
-        ratio = bt_cfg.get("ocean_wind_ratio", [0.97, 0.03])
-        ocean_wind_ratio = (ratio[0], ratio[1])
         eps_degrees = bt_cfg.get("dbscan_eps_degrees", 0.5)
         min_samples = bt_cfg.get("dbscan_min_samples", 5)
+        integrator_name = bt_cfg.get("integrator", "RK4")
+        
+        diff_cfg = bt_cfg.get("horizontal_diffusion", {})
+        if diff_cfg.get("enabled", False):
+            kh = float(diff_cfg.get("Kh", 1.5))
+        else:
+            kh = 0.0
 
     # Check cache
     if stage_output_exists(out_dir, ["backtrack_summary.json"]):
@@ -406,10 +521,8 @@ def run(
 
     # Filter out false positives and non-plastic
     if "polymer_type" in gdf.columns:
-        # If classified, ONLY back-track actual plastic debris
         gdf = gdf[gdf["polymer_type"] == "Marine Debris (Plastic)"].reset_index(drop=True)
     elif "is_false_positive" in gdf.columns:
-        # Fallback if polymer_type isn't available
         gdf = gdf[gdf["is_false_positive"] != True].reset_index(drop=True)
 
     if len(gdf) == 0:
@@ -423,7 +536,6 @@ def run(
     if detection_date:
         det_dt = datetime.fromisoformat(detection_date.replace("Z", "+00:00"))
     else:
-        # Try from detections
         if "detection_date" in gdf.columns and gdf["detection_date"].iloc[0]:
             try:
                 det_dt = datetime.fromisoformat(
@@ -454,10 +566,13 @@ def run(
     logger.info("Downloading wind data")
     wind_path = download_wind_data(expanded_bbox, bt_start, bt_end, data_dir)
 
-    fieldset = load_parcels_fieldset(ocean_path, wind_path)
+    fieldset = load_parcels_fieldset(ocean_path, wind_path, kh=kh)
     if fieldset is None:
         logger.error("Could not load FieldSet. Back-tracking aborted.")
         return []
+
+    # Select integrator scheme
+    integrator_class = get_integrator_kernel(integrator_name)
 
     # Run back-tracking for each cluster
     all_sources = []
@@ -466,41 +581,47 @@ def run(
     for idx, row in gdf.iterrows():
         cluster_id = row.get("cluster_id", idx)
         centroid = row.geometry.centroid
+        row_p_type = row.get("polymer_type", plastic_type)
+        windage_val = get_windage_for_plastic_type(row_p_type, config)
 
         logger.info(
-            "Back-tracking cluster %s (%d particles, %d days)",
-            cluster_id, n_particles, bt_days,
+            "Back-tracking cluster %s (%d particles, %d days, windage=%.3f, Kh=%.1f)",
+            cluster_id, n_particles, bt_days, windage_val, kh,
         )
 
-        # Release particles with small random offsets
         rng = np.random.default_rng(int(cluster_id) + 42)
         lons = []
         lats = []
         times = []
 
         for p in range(n_particles):
-            # Add small random offset (±0.01 degrees ≈ ±1km)
-            p_lon = centroid.x + rng.normal(0, 0.01)
-            p_lat = centroid.y + rng.normal(0, 0.01)
+            p_lon = centroid.x + rng.normal(0, 0.0008)
+            p_lat = centroid.y + rng.normal(0, 0.0008)
             lons.append(p_lon)
             lats.append(p_lat)
             times.append(det_dt)
 
         pset = ParticleSet.from_list(
             fieldset=fieldset,
-            pclass=ScipyParticle,
+            pclass=PlasticParticle,
             lon=lons,
             lat=lats,
-            time=times
+            time=times,
+            windage=[windage_val] * n_particles,
         )
 
         # Construct execution kernel
-        kernel = pset.Kernel(AdvectionRK4)
+        kernel = pset.Kernel(integrator_class)
         if hasattr(fieldset, 'U_wind'):
-            kernel += pset.Kernel(StokesDriftWindage)
+            kernel += pset.Kernel(DirectWindageKernel)
+        if kh > 0.0:
+            kernel += pset.Kernel(BrownianDiffusion2D)
 
-        # Create output file
         output_zarr = out_dir / f"backtrack_{cluster_id}.zarr"
+        if output_zarr.exists():
+            import shutil
+            shutil.rmtree(output_zarr)
+
         pfile = pset.ParticleFile(name=str(output_zarr), outputdt=timedelta(hours=dt_hours))
 
         try:
@@ -508,14 +629,15 @@ def run(
                 kernel,
                 runtime=timedelta(hours=total_hours),
                 dt=-timedelta(hours=dt_hours),
-                output_file=pfile
+                output_file=pfile,
             )
         except Exception as e:
             logger.error(f"Parcels execution failed for cluster {cluster_id}: {e}")
             continue
 
-        # Load trajectories from Zarr to create GeoJSON
+        # Process Zarr trajectories
         import xarray as xr
+        import pandas as pd
         endpoints = []
         all_trajectories = []
         
@@ -524,7 +646,13 @@ def run(
                 lons_array = ds_traj['lon'].values
                 lats_array = ds_traj['lat'].values
                 
-                # Zarr arrays from parcels 3.1.4 are usually (trajectory, obs)
+                # Compute time-series ensemble statistics
+                stats_list = compute_ensemble_statistics(lons_array, lats_array)
+                if stats_list:
+                    pd.DataFrame(stats_list).to_csv(
+                        out_dir / f"ensemble_statistics_{cluster_id}.csv", index=False
+                    )
+
                 for t_idx in range(lons_array.shape[0]):
                     traj_lons = lons_array[t_idx, :]
                     traj_lats = lats_array[t_idx, :]
@@ -534,7 +662,6 @@ def run(
                     valid_lats = traj_lats[valid]
                     
                     if len(valid_lons) > 0:
-                        # Oldest point is the last valid point since we track backwards
                         endpoints.append((float(valid_lons[-1]), float(valid_lats[-1])))
                         all_trajectories.append(list(zip(valid_lons, valid_lats)))
         except Exception as e:
@@ -543,31 +670,38 @@ def run(
 
         # Cluster endpoints
         sources = cluster_endpoints(endpoints, eps_degrees, min_samples)
-
-        # Compute days_to_source for each source
         for src in sources:
             src["cluster_id"] = int(cluster_id)
             src["days_to_source"] = float(bt_days)
 
         all_sources.extend(sources)
 
-        # Save trajectory GeoJSON per cluster
-        traj_features = []
-        for traj in all_trajectories:
-            if len(traj) >= 2:
-                traj_features.append(LineString(traj))
-
+        # Save trajectory GeoJSON
+        traj_features = [LineString(t) for t in all_trajectories if len(t) >= 2]
         if traj_features:
             traj_gdf = gpd.GeoDataFrame(
                 {"geometry": traj_features, "cluster_id": [int(cluster_id)] * len(traj_features)},
                 crs="EPSG:4326",
             )
-            traj_path = out_dir / f"backtrack_{cluster_id}.geojson"
-            traj_gdf.to_file(traj_path, driver="GeoJSON")
+            traj_gdf.to_file(out_dir / f"backtrack_{cluster_id}.geojson", driver="GeoJSON")
 
-    # Save summary
+    # Save summary & run metadata
     with open(out_dir / "backtrack_summary.json", "w") as fh:
         json.dump(all_sources, fh, indent=2, default=str)
+
+    run_meta = {
+        "cmems_product": "cmems_mod_glo_phy_anfc_merged-uv_PT1H-i",
+        "era5_product": "reanalysis-era5-single-levels (u10, v10)",
+        "integrator": integrator_name,
+        "time_step_hours": dt_hours,
+        "horizontal_diffusion_kh": kh,
+        "n_particles": n_particles,
+        "bt_days": bt_days,
+        "kernels": ["Advection" + integrator_name, "DirectWindageKernel", "BrownianDiffusion2D" if kh > 0 else "None"],
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(out_dir / "run_metadata.json", "w") as fh:
+        json.dump(run_meta, fh, indent=2)
 
     logger.info(
         "[bold green]Stage 5 complete[/] — %d source regions from %d clusters",

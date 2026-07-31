@@ -336,7 +336,7 @@ def _generate_rgb_map(
 ):
     """Generate an RGB map from raw Sentinel-2 B04, B03, B02."""
     from rasterio.plot import show
-    raw_dir = Path("data/runs") / Path(output_path).parts[-2] / "raw" / scene_id
+    raw_dir = Path(output_path).parents[2] / "raw" / scene_id
     b4 = raw_dir / "B04.tif"
     b3 = raw_dir / "B03.tif"
     b2 = raw_dir / "B02.tif"
@@ -351,6 +351,7 @@ def _generate_rgb_map(
             g = src3.read(1)
             b = src2.read(1)
             transform = src4.transform
+            src_crs = src4.crs
             extent = [transform[2], transform[2] + transform[0] * src4.width,
                       transform[5] + transform[4] * src4.height, transform[5]]
     except Exception as e:
@@ -373,14 +374,27 @@ def _generate_rgb_map(
             plot_gdf = plot_gdf[plot_gdf["polymer_type"] == "Marine Debris (Plastic)"]
             
         if len(plot_gdf) > 0:
+            # Reproject to raster CRS so coordinates match
+            if plot_gdf.crs and src_crs and plot_gdf.crs != src_crs:
+                plot_gdf = plot_gdf.to_crs(src_crs)
+                
             plot_gdf.plot(
                 ax=ax,
-                color="#E63946",
+                color="#FF0000",
                 alpha=0.9,
-                edgecolor="white", # Using white outline here so it pops against RGB
-                linewidth=1,
+                edgecolor="#FF0000", # Using bright red outline to make it easily visible
+                linewidth=2,
             )
             
+            # Zoom to the detections
+            bounds = plot_gdf.total_bounds
+            if len(bounds) == 4:
+                minx, miny, maxx, maxy = bounds
+                # Add 200m buffer
+                buffer = 200
+                ax.set_xlim(minx - buffer, maxx + buffer)
+                ax.set_ylim(miny - buffer, maxy + buffer)
+
     ax.set_title("RGB Scene with Detected Plastics", fontsize=13, fontweight="bold")
     ax.axis("off")
     fig.tight_layout()

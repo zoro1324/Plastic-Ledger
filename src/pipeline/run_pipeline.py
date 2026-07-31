@@ -76,6 +76,7 @@ def run_pipeline(
     cleanup_patches: bool = False,
     config_path: str = None,    # None → resolved relative to this file
     filter_by_bbox: bool = True,
+    max_clusters: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run the complete Plastic-Ledger pipeline.
 
@@ -92,6 +93,7 @@ def run_pipeline(
         filter_by_bbox: If True (default), Stage 3 only runs inference on
             patches that intersect the bbox. Set to False to process the
             entire satellite tile (all ~2400 patches).
+        max_clusters: Limit backtracking to this many clusters.
 
     Returns:
         Dict with run summary including output paths and metrics.
@@ -120,6 +122,8 @@ def run_pipeline(
     if "backtracking" not in config:
         config["backtracking"] = {}
     config["backtracking"]["days"] = backtrack_days
+    if max_clusters is not None:
+        config["backtracking"]["max_clusters"] = max_clusters
 
     # Create subdirectories
     raw_dir = output_dir / "raw"
@@ -151,6 +155,7 @@ def run_pipeline(
             f"  Target Date: {target_date}\n"
             f"  Cloud Cover: ≤{cloud_cover}%\n"
             f"  Back-track: {backtrack_days} days\n"
+            f"  Max Clusters: {max_clusters or 'all'}\n"
             f"  Cleanup Patches: {'yes' if cleanup_patches else 'no'}\n"
             f"  Skip Stages: {skip_stages or 'none'}",
             style="cyan",
@@ -530,6 +535,10 @@ def main():
         help="Comma-separated stage numbers to skip, e.g. '1,5'",
     )
     parser.add_argument(
+        "--max_clusters", type=int, default=None,
+        help="Maximum number of clusters to run backtracking for",
+    )
+    parser.add_argument(
         "--config", type=str, default=None,
         help="Path to config.yaml (default: src/config/config.yaml)",
     )
@@ -557,6 +566,7 @@ def main():
         cleanup_patches=args.cleanup_patches,
         config_path=args.config,
         filter_by_bbox=not args.no_bbox_filter,
+        max_clusters=args.max_clusters,
     )
 
 

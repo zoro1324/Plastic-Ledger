@@ -20,7 +20,7 @@ import os
 import sys
 import warnings
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -74,8 +74,12 @@ def download_ocean_currents(
 
         @retry_request
         def _download():
+            dataset_id = "cmems_mod_glo_phy_anfc_merged-uv_PT1H-i"
+            if date_start < "2020-11-01":
+                dataset_id = "cmems_mod_glo_phy_my_0.083deg_P1D-m"
+                
             cm.subset(
-                dataset_id="cmems_mod_glo_phy_anfc_merged-uv_PT1H-i",
+                dataset_id=dataset_id,
                 variables=["uo", "vo"],
                 minimum_longitude=bbox[0],
                 minimum_latitude=bbox[1],
@@ -510,12 +514,15 @@ def run(
         eps_degrees = bt_cfg.get("dbscan_eps_degrees", 0.5)
         min_samples = bt_cfg.get("dbscan_min_samples", 5)
         integrator_name = bt_cfg.get("integrator", "RK4")
+        max_clusters = bt_cfg.get("max_clusters", None)
         
         diff_cfg = bt_cfg.get("horizontal_diffusion", {})
         if diff_cfg.get("enabled", False):
             kh = float(diff_cfg.get("Kh", 1.5))
         else:
             kh = 0.0
+    else:
+        max_clusters = None
 
     # Check cache
     if stage_output_exists(out_dir, ["backtrack_summary.json"]):
@@ -530,6 +537,10 @@ def run(
         gdf = gdf[gdf["polymer_type"] == "Marine Debris (Plastic)"].reset_index(drop=True)
     elif "is_false_positive" in gdf.columns:
         gdf = gdf[gdf["is_false_positive"] != True].reset_index(drop=True)
+
+    if max_clusters is not None and len(gdf) > max_clusters:
+        logger.info("Limiting backtracking to first %d clusters (out of %d)", max_clusters, len(gdf))
+        gdf = gdf.iloc[:max_clusters].reset_index(drop=True)
 
     if len(gdf) == 0:
         logger.info("No confirmed debris clusters — skipping backtracking")

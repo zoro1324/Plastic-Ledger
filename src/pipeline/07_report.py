@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 import geopandas as gpd
+import rasterio
 import matplotlib
 
 matplotlib.use("Agg")
@@ -45,6 +46,7 @@ def generate_pdf(
     output_dir: Path,
     detection_map_path: Optional[Path] = None,
     trajectory_map_path: Optional[Path] = None,
+    rgb_map_path: Optional[Path] = None,
 ) -> Path:
     """Generate a PDF report with executive summary, maps, and tables.
 
@@ -55,6 +57,7 @@ def generate_pdf(
         output_dir: Output directory.
         detection_map_path: Optional path to a PNG detection map.
         trajectory_map_path: Optional path to a PNG trajectory map.
+        rgb_map_path: Optional path to a PNG RGB map.
 
     Returns:
         Path to the generated PDF file.
@@ -123,6 +126,17 @@ def generate_pdf(
         except Exception as exc:
             pdf.set_font("Helvetica", "", 9)
             pdf.cell(0, 7, f"(Map image could not be embedded: {exc})", ln=1)
+            
+    # ── RGB Patch Map ─────────────────────────────
+    if rgb_map_path and rgb_map_path.exists():
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 14)
+        pdf.cell(0, 10, "RGB Patch Map", ln=1)
+        try:
+            pdf.image(str(rgb_map_path), w=180)
+        except Exception as exc:
+            pdf.set_font("Helvetica", "", 9)
+            pdf.cell(0, 7, f"(RGB image could not be embedded: {exc})", ln=1)
 
     # ── Page 2: Polymer Distribution ──────────────
     if n_clusters > 0 and "polymer_type" in detections_gdf.columns:
@@ -187,7 +201,12 @@ def generate_pdf(
 
         # Table rows
         pdf.set_font("Helvetica", "", 7)
-        for _, row in detections_gdf.iterrows():
+        
+        filtered_gdf = detections_gdf.copy()
+        if "polymer_type" in filtered_gdf.columns:
+            filtered_gdf = filtered_gdf[filtered_gdf["polymer_type"] == "Marine Debris (Plastic)"]
+            
+        for _, row in filtered_gdf.iterrows():
             cid = str(row.get("cluster_id", ""))[:4]
             area = f"{row.get('area_m2', 0):.0f}"
             conf = f"{row.get('mean_confidence', 0):.2f}"
@@ -272,6 +291,8 @@ def _generate_detection_map(
     if len(plot_gdf) > 0 and "geometry" in plot_gdf.columns:
         plot_gdf = plot_gdf[plot_gdf.geometry.notna()]
         plot_gdf = plot_gdf[~plot_gdf.geometry.is_empty]
+        if "polymer_type" in plot_gdf.columns:
+            plot_gdf = plot_gdf[plot_gdf["polymer_type"] == "Marine Debris (Plastic)"]
 
     if len(plot_gdf) > 0:
         bounds = plot_gdf.total_bounds
@@ -289,12 +310,11 @@ def _generate_detection_map(
         plot_gdf.plot(
             ax=ax,
             color="#E63946",
-            alpha=0.7,
-            edgecolor="white",
-            linewidth=0.5,
+            alpha=0.9,
+            edgecolor="none",
             aspect="auto",
         )
-        ax.set_title(f"Debris Detections ({len(gdf)} clusters)",
+        ax.set_title(f"Debris Detections ({len(plot_gdf)} plastic clusters)",
                      color="white", fontsize=13, fontweight="bold")
     else:
         ax.set_title("No Debris Detected",
@@ -307,6 +327,206 @@ def _generate_detection_map(
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, facecolor="#0d1117", bbox_inches="tight")
     plt.close(fig)
+
+
+def _generate_rgb_map(
+    scene_id: str,
+    gdf: gpd.GeoDataFrame,
+    output_path: Path,
+):
+    """Generate an RGB map from raw Sentinel-2 B04, B03, B02."""
+    from rasterio.plot import show
+    raw_dir = Path("data/runs") / Path(output_path).parts[-2] / "raw" / scene_id
+    b4 = raw_dir / "B04.tif"
+    b3 = raw_dir / "B03.tif"
+    b2 = raw_dir / "B02.tif"
+
+    if not (b4.exists() and b3.exists() and b2.exists()):
+        # Just return without generating if raw data is missing
+        return
+
+    try:
+        with rasterio.open(b4) as src4, rasterio.open(b3) as src3, rasterio.open(b2) as src2:
+            r = src4.read(1)
+            g = src3.read(1)
+            b = src2.read(1)
+            transform = src4.transform
+            extent = [transform[2], transform[2] + transform[0] * src4.width,
+                      transform[5] + transform[4] * src4.height, transform[5]]
+    except Exception as e:
+        logger.warning(f"Could not load raw bands for RGB map: {e}")
+        return
+
+    # Normalize to 0-1 using a common visual max (e.g. 3000)
+    rgb = np.dstack([r, g, b]) / 3000.0
+    rgb = np.clip(rgb, 0, 1)
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.imshow(rgb, extent=extent)
+
+    # Plot plastics
+    plot_gdf = gdf.copy()
+    if len(plot_gdf) > 0 and "geometry" in plot_gdf.columns:
+        plot_gdf = plot_gdf[plot_gdf.geometry.notna()]
+        plot_gdf = plot_gdf[~plot_gdf.geometry.is_empty]
+        if "polymer_type" in plot_gdf.columns:
+            plot_gdf = plot_gdf[plot_gdf["polymer_type"] == "Marine Debris (Plastic)"]
+            
+        if len(plot_gdf) > 0:
+            plot_gdf.plot(
+                ax=ax,
+                color="#E63946",
+                alpha=0.9,
+                edgecolor="white", # Using white outline here so it pops against RGB
+                linewidth=1,
+            )
+            
+    ax.set_title("RGB Scene with Detected Plastics", fontsize=13, fontweight="bold")
+    ax.axis("off")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def generate_interactive_map(
+    detections_gdf: gpd.GeoDataFrame,
+    attribution_data: List[Dict],
+    output_path: Path,
+    attribution_dir: Optional[Path] = None,
+):
+    """Generate an interactive Leaflet HTML map."""
+    if len(detections_gdf) == 0:
+        return
+        
+    filtered_gdf = detections_gdf.copy()
+    if "polymer_type" in filtered_gdf.columns:
+        filtered_gdf = filtered_gdf[filtered_gdf["polymer_type"] == "Marine Debris (Plastic)"]
+
+    if len(filtered_gdf) == 0:
+        return
+
+    features = []
+    
+    # Add debris points
+    for _, row in filtered_gdf.iterrows():
+        lat = row.get("centroid_lat")
+        lon = row.get("centroid_lon")
+        if pd.isna(lat) or pd.isna(lon):
+            continue
+            
+        cid = row.get("cluster_id")
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "type": "debris",
+                "id": str(cid),
+                "area": float(row.get("area_m2", 0))
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [lon, lat]
+            }
+        })
+        
+        # Add backtracking lines
+        if attribution_data:
+            has_real_trajectories = False
+            for attr in attribution_data:
+                if str(attr.get("debris_cluster_id")) == str(cid):
+                    source_name = attr.get("source_type", "Unknown")
+                    
+                    # Try to load detailed particle trajectories
+                    if attribution_dir is not None:
+                        traj_file = attribution_dir / f"backtrack_{cid}.geojson"
+                        if traj_file.exists():
+                            try:
+                                with open(traj_file) as fh:
+                                    traj_data = json.load(fh)
+                                    for feat in traj_data.get("features", []):
+                                        feat["properties"]["type"] = "trajectory"
+                                        feat["properties"]["source"] = source_name
+                                        features.append(feat)
+                                has_real_trajectories = True
+                            except Exception as exc:
+                                logger.warning("Could not load trajectory for cluster %s: %s", cid, exc)
+
+                    # Fallback to straight line if detailed paths aren't found
+                    if not has_real_trajectories:
+                        s_cent = attr.get("source_centroid")
+                        if s_cent and len(s_cent) == 2:
+                            slon, slat = s_cent
+                            features.append({
+                                "type": "Feature",
+                                "properties": {
+                                    "type": "trajectory",
+                                    "source": source_name
+                                },
+                                "geometry": {
+                                    "type": "LineString",
+                                    "coordinates": [[lon, lat], [slon, slat]]
+                                }
+                            })
+                    break
+
+    center_lat = filtered_gdf["centroid_lat"].mean()
+    center_lon = filtered_gdf["centroid_lon"].mean()
+
+    geojson_str = json.dumps({"type": "FeatureCollection", "features": features})
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Plastic-Ledger Hydrodynamic Backtracking Map</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body {{ margin: 0; padding: 0; font-family: sans-serif; }}
+        #map {{ width: 100vw; height: 100vh; }}
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <script>
+        var map = L.map('map').setView([{center_lat}, {center_lon}], 12);
+        L.tileLayer('https://{{s}}.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}{{r}}.png', {{
+            attribution: '© OpenStreetMap contributors © CARTO',
+            subdomains: 'abcd',
+            maxZoom: 19
+        }}).addTo(map);
+
+        var data = {geojson_str};
+
+        L.geoJSON(data, {{
+            pointToLayer: function (feature, latlng) {{
+                return L.circleMarker(latlng, {{
+                    radius: 6,
+                    fillColor: "#E63946",
+                    color: "#ffffff",
+                    weight: 1,
+                    opacity: 1,
+                    fillOpacity: 0.8
+                }}).bindPopup("Debris ID: " + feature.properties.id + "<br>Area: " + feature.properties.area + " m²");
+            }},
+            style: function (feature) {{
+                if (feature.properties.type === 'trajectory') {{
+                    return {{color: "#38bdf8", weight: 2, dashArray: "5, 5", opacity: 0.2}};
+                }}
+            }},
+            onEachFeature: function (feature, layer) {{
+                if (feature.properties.type === 'trajectory') {{
+                    layer.bindPopup("Source: " + feature.properties.source);
+                }}
+            }}
+        }}).addTo(map);
+    </script>
+</body>
+</html>"""
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    logger.info("Interactive map saved to %s", output_path)
 
 
 # ─────────────────────────────────────────────
@@ -468,17 +688,28 @@ def print_terminal_summary(
             table.add_column("Polymer Type")
             table.add_column("Location")
 
+            class_counts = {}
             for _, row in detections_gdf.iterrows():
+                poly = str(row.get("polymer_type", "N/A"))
+                class_counts[poly] = class_counts.get(poly, 0) + 1
+                
+                if "False Positive" in poly:
+                    continue
+                    
                 table.add_row(
                     str(row.get("cluster_id", "")),
                     f"{row.get('area_m2', 0):.0f}",
                     f"{row.get('mean_confidence', 0):.3f}",
-                    str(row.get("polymer_type", "N/A")),
+                    poly,
                     f"({row.get('centroid_lat', 0):.3f}, "
                     f"{row.get('centroid_lon', 0):.3f})",
                 )
 
             console.print(table)
+            
+            console.print("\n  [bold]Class Summary:[/]")
+            for k, v in sorted(class_counts.items()):
+                console.print(f"    - {k}: {v}")
 
         # Attribution table
         if attribution_data:
@@ -610,10 +841,19 @@ def run(
     detection_map = out_dir / "detection_map.png"
     _generate_detection_map(detections_gdf, detection_map)
 
+    # Generate RGB map
+    rgb_map = out_dir / "rgb_map.png"
+    _generate_rgb_map(scene_id, detections_gdf, rgb_map)
+
+    # Generate interactive map
+    html_map = out_dir / "backtrack_map.html"
+    generate_interactive_map(detections_gdf, attribution_data, html_map, attribution_path.parent if attribution_path else None)
+
     # Generate PDF
     pdf_path = generate_pdf(
         scene_id, detections_gdf, attribution_data, out_dir,
         detection_map_path=detection_map,
+        rgb_map_path=rgb_map,
     )
 
     # Generate GeoJSON summary

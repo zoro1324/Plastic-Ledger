@@ -766,6 +766,9 @@ def run(
     else:
         logger.info("No bbox provided for detection, processing all %d patches", len(patch_ids))
 
+    full_probs = None
+    counts = None
+
     for i, patch_id in enumerate(patch_ids):
         info = patch_index.get(patch_id, {})
         patch_file = info.get("patch_file", f"{patch_id}.npy")
@@ -779,23 +782,34 @@ def run(
                 patch_path = npy_fallback
         if not patch_path.exists():
             logger.warning("Patch file missing: %s", patch_path)
-            # Create zero prediction
-            predictions.append(np.zeros((NUM_CLASSES, 256, 256), dtype=np.float32))
             continue
 
         patch = _load_patch_array(patch_path)
         prob_map = run_tta_inference(model, patch, device, use_tta=use_tta, debris_logit_boost=debris_logit_boost)
-        predictions.append(prob_map)
+        
+        if full_probs is None:
+            num_classes = prob_map.shape[0]
+            logger.info("Allocating float16 prediction buffers (approx 3.6 GB)")
+            full_probs = np.zeros((num_classes, scene_shape[0], scene_shape[1]), dtype=np.float16)
+            counts = np.zeros((scene_shape[0], scene_shape[1]), dtype=np.float16)
+
+        rs = info.get("row_start", 0)
+        cs = info.get("col_start", 0)
+        ah = info.get("actual_h", 256)
+        aw = info.get("actual_w", 256)
+
+        full_probs[:, rs:rs + ah, cs:cs + aw] += prob_map[:, :ah, :aw].astype(np.float16)
+        counts[rs:rs + ah, cs:cs + aw] += 1.0
 
         if (i + 1) % 50 == 0 or i == len(patch_ids) - 1:
             logger.info("  Processed %d/%d patches", i + 1, len(patch_ids))
 
-    # Stitch predictions
-    logger.info("Stitching %d patch predictions into full scene", len(predictions))
-    full_probs = stitch_patches(predictions, patch_ids, patch_index, scene_shape)
+    logger.info("Averaging overlapped patch predictions")
+    counts = np.maximum(counts, 1.0)
+    full_probs /= counts[np.newaxis, :, :]
 
     # Generate masks
-    debris_prob = full_probs[DEBRIS_CLASS_INDEX]
+    debris_prob = full_probs[DEBRIS_CLASS_INDEX].astype(np.float32)
     class_mask = full_probs.argmax(axis=0).astype(np.uint8)
 
     # Apply land mask filter if available

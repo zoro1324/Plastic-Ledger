@@ -36,8 +36,6 @@ data/attribution/<SCENE_ID>/
 ├── ensemble_statistics.csv               # Hourly mean coordinates, std, covariance matrix, 95% ellipse, hull area
 ├── diagnostics.json                      # Transparent quality indicators (forcing completeness, smoothness, land ratio)
 ├── run_metadata.json                     # Git commit hash, tool versions, random seeds, kernel stack, dt, Kh
-├── backtrack_map.html                    # Dynamic interactive Leaflet map (OpenStreetMap/CartoDB basemaps)
-├── backtrack_dashboard.png               # High-resolution 300 DPI 4-panel publication dashboard
 └── forcing_data/
     ├── ocean_currents.nc                 # CMEMS surface velocity fields (uo, vo)
     └── wind_data.nc                      # ERA5 10m wind velocity fields (u10, v10)
@@ -112,9 +110,11 @@ Instead of an opaque 0–100 score, Stage 5 produces transparent diagnostic metr
 
 ## Visualization Tools
 
-Stage 5 auto-generates two visual outputs:
-1. **Interactive Leaflet HTML Map (`backtrack_map.html`)**: Interactive map with CartoDB Light/Dark/OSM basemaps, release marker, origin centroid, 95% spatial confidence boundary, and 100 polyline trajectory paths.
+Stage 5 auto-generates visual outputs when run via the standalone verification tools:
+1. **Interactive Leaflet HTML Map (`backtrack_map.html`)**: Interactive map with CartoDB Light/Dark/OSM basemaps, release marker, origin centroid, 95% spatial confidence boundary, and 100 polyline trajectory paths (generated via `verification/generate_visualizations.py`).
 2. **Matplotlib Dashboard (`backtrack_dashboard.png`)**: 4-panel publication plot displaying spatial trajectories, cumulative drift distance over time, spread radius growth ($km$), and velocity distributions.
+
+*(Note: During full pipeline execution, the interactive HTML map is generated downstream in Stage 7.)*
 
 ---
 

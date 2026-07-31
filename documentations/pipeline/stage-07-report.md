@@ -29,7 +29,9 @@ data/reports/<SCENE_ID>/
 ├── final_report.pdf          # Multi-page PDF report
 ├── final_report.geojson      # Detection polygons with attribution merged
 ├── debris_summary.csv        # Flat CSV of all clusters
-├── detection_map.png         # Debris cluster map image
+├── detection_map.png         # Debris cluster map image (polygons only)
+├── rgb_map.png               # High-res RGB map with detections overlaid
+├── backtrack_map.html        # Interactive Leaflet map with OceanParcels trajectories
 └── polymer_distribution.png  # Pie chart of polymer types
 ```
 
@@ -178,26 +180,29 @@ If `rich` is not installed, a plain-text fallback is printed instead.
 
 ## Processing Steps
 
-```
 1. Load detections_classified.geojson
        ↓
 2. Load attribution_report.json
        ↓
 3. Generate detection_map.png (scatter of cluster polygons)
        ↓
-4. Generate polymer_distribution.png (pie chart)
+4. Generate rgb_map.png (raw Sentinel-2 B04/B03/B02 with polygons)
        ↓
-5. Generate PDF:
+5. Generate backtrack_map.html (interactive trajectory visualization)
+       ↓
+6. Generate polymer_distribution.png (pie chart)
+       ↓
+7. Generate PDF:
      - Page 1: Summary + detection map
-     - Page 2: Polymer chart
+     - Page 2: RGB map + Polymer chart
      - Page 3: Top-3 attribution explanations
      - Page 4: Cluster table
        ↓
-6. Generate final_report.geojson (detections + attribution merge)
+8. Generate final_report.geojson (detections + attribution merge)
        ↓
-7. Generate debris_summary.csv (flat table)
+9. Generate debris_summary.csv (flat table)
        ↓
-8. Print rich terminal summary
+10. Print rich terminal summary
 ```
 
 ---

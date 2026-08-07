@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Leaflet + Tailwind preflight fix */
+.leaflet-container svg { max-width: none !important; max-height: none !important; }
+.leaflet-overlay-pane svg { position: absolute; }
+
+@layer base {
+  :root {
+    --background: 220 30% 5%;
+    --foreground: 210 40% 96%;
+    --card: 220 30% 8%;
+    --card-foreground: 210 40% 96%;
+    --primary: 166 72% 48%;
+    --primary-foreground: 220 30% 5%;
+    --secondary: 217 80% 55%;
+    --secondary-foreground: 210 40% 96%;
+    --muted: 215 25% 14%;
+    --muted-foreground: 215 20% 55%;
+    --accent: 166 72% 48%;
+    --accent-foreground: 220 30% 5%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 96%;
+    --border: 215 20% 16%;
+    --input: 215 25% 18%;
+    --ring: 166 72% 48%;
+    --radius: 0.75rem;
+    --glow-teal: 166 72% 48%;
+    --marine-blue: 217 80% 55%;
+  }
+
+  * { @apply border-border; }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', sans-serif;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', sans-serif;
+  }
+  html { scroll-behavior: smooth; }
+}
+
+@layer utilities {
+  .text-glow {
+    text-shadow: 0 0 20px hsl(var(--glow-teal) / 0.5), 0 0 40px hsl(var(--glow-teal) / 0.2);
+  }
+  .box-glow {
+    box-shadow: 0 0 30px hsl(var(--glow-teal) / 0.12), 0 0 60px hsl(var(--glow-teal) / 0.04);
+  }
+  .glass {
+    @apply bg-card/40 backdrop-blur-xl border border-border/50;
+  }
+  .glass-card {
+    @apply bg-card/60 backdrop-blur-lg border border-border/40 rounded-xl;
+  }
+  .gradient-border {
+    border: 1px solid transparent;
+    background: linear-gradient(hsl(var(--card)), hsl(var(--card))) padding-box,
+                linear-gradient(135deg, hsl(var(--primary) / 0.3), hsl(var(--border))) border-box;
+  }
+}
+
+/* Leaflet dark theme overrides */
+.leaflet-bar {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5) !important;
+  border: 1px solid hsl(var(--border) / 0.6) !important;
+  border-radius: 10px !important;
+  background-color: hsl(var(--card) / 0.8) !important;
+  backdrop-filter: blur(12px) !important;
+  overflow: hidden;
+}
+.leaflet-bar a {
+  background-color: transparent !important;
+  border-bottom: 1px solid hsl(var(--border) / 0.5) !important;
+  color: hsl(var(--foreground)) !important;
+  width: 36px !important; height: 36px !important; line-height: 36px !important;
+  transition: all 0.2s ease;
+}
+.leaflet-bar a:hover {
+  background-color: hsl(var(--muted) / 0.8) !important;
+  color: hsl(var(--primary)) !important;
+}
+.leaflet-bar a:last-child { border-bottom: none !important; }
+.leaflet-control-zoom-in, .leaflet-control-zoom-out {
+  font-weight: bold !important; font-size: 1.2rem !important;
+}
+.leaflet-tooltip {
+  background-color: hsl(var(--card)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  color: hsl(var(--foreground)) !important;
+  border-radius: 6px !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5) !important;
+  font-family: inherit !important;
+  font-size: 0.75rem !important;
+}

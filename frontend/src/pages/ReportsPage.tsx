@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { loadDebrisSummaryCsv } from "@/services/dataService";
-import { REPORT_FILES } from "@/services/dataService";
+import { getReportFiles, getSceneId, loadDebrisSummaryCsv, loadRunSummary } from "@/services/dataService";
 import { DebrisSummaryRow } from "@/types";
 import {
   FileText,
@@ -14,56 +14,69 @@ import {
   Eye,
 } from "lucide-react";
 
-const reportCards = [
-  {
-    title: "PDF Report",
-    desc: "Executive summary with detection maps, polymer charts, and attribution tables.",
-    icon: FileText,
-    file: REPORT_FILES.pdf,
-    size: "1.2 MB",
-    color: "bg-red-500/15 text-red-400",
-  },
-  {
-    title: "GeoJSON Data",
-    desc: "All detections with polygons & attribution data for GIS tools.",
-    icon: Globe,
-    file: REPORT_FILES.geojson,
-    size: "498 KB",
-    color: "bg-blue-500/15 text-blue-400",
-  },
-  {
-    title: "CSV Summary",
-    desc: "One row per cluster with all fields. Open in Excel or any spreadsheet.",
-    icon: Table2,
-    file: REPORT_FILES.csv,
-    size: "98 KB",
-    color: "bg-emerald-500/15 text-emerald-400",
-  },
-  {
-    title: "Interactive Backtrack Map",
-    desc: "Folium/Leaflet interactive HTML map with particle trajectories.",
-    icon: Map,
-    file: REPORT_FILES.backtrackMap,
-    size: "1.8 MB",
-    color: "bg-purple-500/15 text-purple-400",
-  },
-];
-
-const imageCards = [
-  { title: "RGB Scene with Detections", file: REPORT_FILES.rgbMap, size: "1.1 MB" },
-  { title: "Detection Map", file: REPORT_FILES.detectionMap, size: "25 KB" },
-  { title: "Polymer Distribution", file: REPORT_FILES.polymerDist, size: "88 KB" },
-];
-
 const ReportsPage: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const runId = searchParams.get("id") ?? "run_001";
+  const [sceneId, setSceneId] = useState<string | null>(null);
+  const REPORT_FILES = sceneId ? getReportFiles(runId, sceneId) : null;
+  const reportCards = REPORT_FILES ? [
+    {
+      title: "PDF Report",
+      desc: "Executive summary with detection maps, polymer charts, and attribution tables.",
+      icon: FileText,
+      file: REPORT_FILES.pdf,
+      size: "1.2 MB",
+      color: "bg-red-500/15 text-red-400",
+    },
+    {
+      title: "GeoJSON Data",
+      desc: "All detections with polygons & attribution data for GIS tools.",
+      icon: Globe,
+      file: REPORT_FILES.geojson,
+      size: "498 KB",
+      color: "bg-blue-500/15 text-blue-400",
+    },
+    {
+      title: "CSV Summary",
+      desc: "One row per cluster with all fields. Open in Excel or any spreadsheet.",
+      icon: Table2,
+      file: REPORT_FILES.csv,
+      size: "98 KB",
+      color: "bg-emerald-500/15 text-emerald-400",
+    },
+    {
+      title: "Interactive Backtrack Map",
+      desc: "Folium/Leaflet interactive HTML map with particle trajectories.",
+      icon: Map,
+      file: REPORT_FILES.backtrackMap,
+      size: "1.8 MB",
+      color: "bg-purple-500/15 text-purple-400",
+    },
+  ] : [];
+
+  const imageCards = REPORT_FILES ? [
+    { title: "RGB Scene with Detections", file: REPORT_FILES.rgbMap, size: "1.1 MB" },
+    { title: "Detection Map", file: REPORT_FILES.detectionMap, size: "25 KB" },
+    { title: "Polymer Distribution", file: REPORT_FILES.polymerDist, size: "88 KB" },
+  ] : [];
+
   const [csvData, setCsvData] = useState<DebrisSummaryRow[]>([]);
   const [showCsv, setShowCsv] = useState(false);
   const [showBacktrackMap, setShowBacktrackMap] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
 
   useEffect(() => {
-    loadDebrisSummaryCsv().then(setCsvData);
-  }, []);
+    loadRunSummary(runId).then((summary) => setSceneId(getSceneId(summary)));
+    loadDebrisSummaryCsv(runId).then(setCsvData);
+  }, [runId]);
+
+  if (!REPORT_FILES) {
+    return (
+      <div className="min-h-screen bg-background pt-14 flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background pt-14">
@@ -71,7 +84,7 @@ const ReportsPage: React.FC = () => {
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mb-6">
           <h1 className="font-heading text-2xl font-bold flex items-center gap-2">
             <FileText className="w-6 h-6 text-primary" />
-            Reports for run_001
+            Reports for run {runId}
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
             Download generated reports or preview them below.

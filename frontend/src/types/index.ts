@@ -1,3 +1,18 @@
+export interface PipelineRun {
+  id: string;
+  status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+  bbox: string;
+  target_date: string;
+  cloud_cover: number;
+  backtrack_days: number;
+  max_clusters: number;
+  output_dir: string | null;
+  created_at: string;
+  completed_at: string | null;
+  summary: RunSummary | null;
+  error_message: string | null;
+}
+
 // ─── Run Summary (run_summary.json) ───
 export interface RunSummary {
   bbox: [number, number, number, number];

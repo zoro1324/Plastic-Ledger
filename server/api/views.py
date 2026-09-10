@@ -22,7 +22,7 @@ def execute_pipeline(run_id):
         run_instance.save()
         
         output_dir = PROJECT_ROOT / 'data' / 'runs' / str(run_instance.id)
-        model_path = PROJECT_ROOT / 'models' / 'unet' / 'runs' / 'marida_v1' / 'best_model.pth'
+        model_path = PROJECT_ROOT / 'models' / 'production' / 'best_model_SegFormer_v2.pth'
         config_path = SRC_DIR / 'config' / 'config.yaml'
         
         run_instance.output_dir = str(output_dir)
@@ -37,6 +37,7 @@ def execute_pipeline(run_id):
             model_path=model_path,
             cloud_cover=run_instance.cloud_cover,
             backtrack_days=run_instance.backtrack_days,
+            max_clusters=run_instance.max_clusters,
             config_path=str(config_path)
         )
         

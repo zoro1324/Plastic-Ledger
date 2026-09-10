@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -32,13 +33,15 @@ const tooltipStyle = {
 };
 
 const AnalyticsPage: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const runId = searchParams.get("id") ?? "run_001";
   const [summary, setSummary] = useState<RunSummary | null>(null);
   const [csv, setCsv] = useState<DebrisSummaryRow[]>([]);
   const [attribution, setAttribution] = useState<AttributionEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([loadRunSummary(), loadDebrisSummaryCsv(), loadAttribution()]).then(
+    Promise.all([loadRunSummary(runId), loadDebrisSummaryCsv(runId), loadAttribution(runId)]).then(
       ([sum, csvData, attr]) => {
         setSummary(sum);
         setCsv(csvData);
@@ -148,7 +151,7 @@ const AnalyticsPage: React.FC = () => {
             Analytics
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Statistics and charts from run_001 detection results ({csv.length} clusters).
+            Statistics and charts from run {runId} detection results ({csv.length} clusters).
           </p>
         </motion.div>
 

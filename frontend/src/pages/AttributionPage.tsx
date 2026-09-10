@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { MapContainer, TileLayer, CircleMarker, Rectangle, Polyline, Popup } from "react-leaflet";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
@@ -21,6 +22,8 @@ const SCORE_COLORS = {
 };
 
 const AttributionPage: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const runId = searchParams.get("id") ?? "run_001";
   const [attribution, setAttribution] = useState<AttributionEntry[]>([]);
   const [backtrack, setBacktrack] = useState<BacktrackEntry[]>([]);
   const [metadata, setMetadata] = useState<RunMetadata | null>(null);
@@ -28,7 +31,7 @@ const AttributionPage: React.FC = () => {
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
   useEffect(() => {
-    Promise.all([loadAttribution(), loadBacktrackSummary(), loadRunMetadata()]).then(
+    Promise.all([loadAttribution(runId), loadBacktrackSummary(runId), loadRunMetadata(runId)]).then(
       ([attr, bt, meta]) => {
         setAttribution(attr);
         setBacktrack(bt);

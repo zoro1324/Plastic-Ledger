@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { MapContainer, TileLayer, Rectangle, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
@@ -9,7 +9,9 @@ import {
   Layers,
   RotateCcw,
   Info,
+  Loader2,
 } from "lucide-react";
+import { createPipelineRun } from "@/lib/api";
 
 const TILE_LAYERS = {
   satellite: {
@@ -123,11 +125,25 @@ function FlyToBBox({ bbox }: { bbox: BBox | null }) {
 }
 
 const TrackingPage: React.FC = () => {
-  const [bbox, setBBox] = useState<BBox | null>(null);
+  const navigate = useNavigate();
+  const defaultBBox: BBox = {
+    west: "-88.032087",
+    south: "15.826206",
+    east: "-88.012087",
+    north: "15.846206",
+  };
+  const [bbox, setBBox] = useState<BBox | null>(defaultBBox);
+  const [targetDate, setTargetDate] = useState<string>("2020-09-18");
+  const [cloudCover, setCloudCover] = useState<number>(20);
+  const [backtrackDays, setBacktrackDays] = useState<number>(30);
+  const [maxClusters, setMaxClusters] = useState<number>(5);
   const [tileKey, setTileKey] = useState<"satellite" | "streets">("satellite");
   const [areaInfo, setAreaInfo] = useState<{ width: number; height: number; area: number } | null>(null);
-  const [rawInput, setRawInput] = useState<string>("");
+  const [rawInput, setRawInput] = useState<string>(
+    "-88.032087,15.826206,-88.012087,15.846206"
+  );
   const [inputError, setInputError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const tile = TILE_LAYERS[tileKey];
 
   const applyCoordinates = (text: string) => {
@@ -187,7 +203,28 @@ const TrackingPage: React.FC = () => {
     bbox.south &&
     bbox.east &&
     bbox.west &&
-    parseFloat(bbox.north) !== parseFloat(bbox.south);
+    parseFloat(bbox.north) !== parseFloat(bbox.south) &&
+    targetDate.length > 0;
+
+  const handleProceed = async () => {
+    if (!canProceed || !bbox) return;
+    setIsSubmitting(true);
+    try {
+      const bboxStr = `${bbox.west},${bbox.south},${bbox.east},${bbox.north}`;
+      await createPipelineRun({
+        bbox: bboxStr,
+        target_date: targetDate,
+        cloud_cover: cloudCover,
+        backtrack_days: backtrackDays,
+        max_clusters: maxClusters,
+      });
+      navigate("/dashboard");
+    } catch (err) {
+      console.error(err);
+      alert("Failed to create pipeline run.");
+      setIsSubmitting(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background pt-14">
@@ -235,6 +272,61 @@ const TrackingPage: React.FC = () => {
             <p className="text-[11px] text-muted-foreground">
               Format: <span className="font-mono text-foreground">West, South, East, North</span>
             </p>
+          </div>
+
+          {/* Target Date Input */}
+          <div className="mb-6 space-y-2">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block">
+              Target Date
+            </label>
+            <input
+              type="date"
+              value={targetDate}
+              onChange={(e) => setTargetDate(e.target.value)}
+              className="w-full px-3 py-2 bg-muted/50 border border-border/50 rounded-lg text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+            />
+          </div>
+
+          {/* Pipeline Parameters */}
+          <div className="mb-6 space-y-3">
+            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider block">
+              Pipeline Parameters
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              <label className="space-y-1">
+                <span className="text-[11px] text-muted-foreground">Cloud max (%)</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={cloudCover}
+                  onChange={(e) => setCloudCover(Number(e.target.value))}
+                  className="w-full px-2 py-2 bg-muted/50 border border-border/50 rounded-lg text-sm"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] text-muted-foreground">Backtrack days</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="365"
+                  value={backtrackDays}
+                  onChange={(e) => setBacktrackDays(Number(e.target.value))}
+                  className="w-full px-2 py-2 bg-muted/50 border border-border/50 rounded-lg text-sm"
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-[11px] text-muted-foreground">Max clusters</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="500"
+                  value={maxClusters}
+                  onChange={(e) => setMaxClusters(Number(e.target.value))}
+                  className="w-full px-2 py-2 bg-muted/50 border border-border/50 rounded-lg text-sm"
+                />
+              </label>
+            </div>
           </div>
 
           {/* Coordinate Display Table */}
@@ -299,22 +391,33 @@ const TrackingPage: React.FC = () => {
           <div className="flex gap-3">
             <button
               onClick={handleReset}
-              className="flex items-center gap-1.5 px-4 py-2.5 glass rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+              disabled={isSubmitting}
+              className="flex items-center gap-1.5 px-4 py-2.5 glass rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
             >
               <RotateCcw className="w-4 h-4" />
               Reset
             </button>
-            <Link
-              to={canProceed ? "/dashboard" : "#"}
+            <button
+              onClick={handleProceed}
+              disabled={!canProceed || isSubmitting}
               className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all ${
-                canProceed
+                canProceed && !isSubmitting
                   ? "bg-primary text-primary-foreground hover:bg-primary/90 hover:shadow-[0_0_20px_hsl(var(--primary)/0.3)]"
                   : "bg-muted text-muted-foreground cursor-not-allowed"
               }`}
             >
-              Proceed to Dashboard
-              <ChevronRight className="w-4 h-4" />
-            </Link>
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Creating Run...
+                </>
+              ) : (
+                <>
+                  Proceed to Dashboard
+                  <ChevronRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
           </div>
 
           {/* Tip */}

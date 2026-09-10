@@ -2,8 +2,8 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
-import { loadRunSummary } from "@/services/dataService";
-import { RunSummary, PIPELINE_STAGES, POLYMER_COLORS } from "@/types";
+import { getPipelineRuns } from "@/lib/api";
+import { RunSummary, PIPELINE_STAGES, POLYMER_COLORS, PipelineRun } from "@/types";
 import {
   Crosshair,
   FlaskConical,
@@ -36,14 +36,38 @@ function KpiCard({ label, value, icon: Icon, color }: { label: string; value: st
 }
 
 const DashboardPage: React.FC = () => {
-  const [summary, setSummary] = useState<RunSummary | null>(null);
+  const [runs, setRuns] = useState<PipelineRun[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const fetchRuns = async () => {
+    try {
+      const data = await getPipelineRuns();
+      setRuns(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    loadRunSummary().then((d) => { setSummary(d); setLoading(false); });
+    fetchRuns();
+    // Poll every 5 seconds if there are pending/running runs
+    const interval = setInterval(() => {
+      setRuns((currentRuns) => {
+        const hasActive = currentRuns.some(
+          (r) => r.status === "PENDING" || r.status === "RUNNING"
+        );
+        if (hasActive) {
+          fetchRuns();
+        }
+        return currentRuns;
+      });
+    }, 5000);
+    return () => clearInterval(interval);
   }, []);
 
-  if (loading || !summary) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-background pt-14 flex items-center justify-center">
         <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
@@ -51,30 +75,31 @@ const DashboardPage: React.FC = () => {
     );
   }
 
-  const pc = summary.outputs.polymer_counts;
-  const totalDetections = Object.values(pc).reduce((a, b) => a + b, 0);
-  const plasticCount = pc["Marine Debris (Plastic)"] || 0;
-  const fpRate = (((totalDetections - plasticCount) / totalDetections) * 100).toFixed(1);
+  // Find the latest completed run for KPIs
+  const latestCompleted = runs.find((r) => r.status === "COMPLETED" && r.summary);
+  const summary = latestCompleted?.summary || null;
 
-  const pieData = Object.entries(pc)
-    .sort((a, b) => b[1] - a[1])
-    .map(([name, value]) => ({
-      name: name.replace("False Positive ", "FP "),
-      value,
-      color: POLYMER_COLORS[name] || "#6B7280",
-    }));
+  let totalDetections = 0;
+  let plasticCount = 0;
+  let fpRate = "0.0";
+  let pieData: { name: string; value: number; color: string }[] = [];
 
-  // Mock run list (only run_001 exists)
-  const runs = [
-    {
-      id: "run_001",
-      status: "Completed",
-      region: "Honduras Coast",
-      date: summary.target_date,
-      detections: totalDetections,
-      plastic: plasticCount,
-    },
-  ];
+  if (summary) {
+    const pc = summary.outputs?.polymer_counts || {};
+    totalDetections = Object.values(pc).reduce((a, b) => a + b, 0);
+    plasticCount = pc["Marine Debris (Plastic)"] || 0;
+    fpRate = totalDetections > 0 
+      ? (((totalDetections - plasticCount) / totalDetections) * 100).toFixed(1)
+      : "0.0";
+
+    pieData = Object.entries(pc)
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, value]) => ({
+        name: name.replace("False Positive ", "FP "),
+        value,
+        color: POLYMER_COLORS[name] || "#6B7280",
+      }));
+  }
 
   return (
     <div className="min-h-screen bg-background pt-14">
@@ -84,9 +109,9 @@ const DashboardPage: React.FC = () => {
           <KpiCard label="Total Detections" value={totalDetections.toString()} icon={Crosshair} color="bg-secondary/20 text-secondary" />
           <KpiCard label="Confirmed Plastic Clusters" value={plasticCount.toString()} icon={FlaskConical} color="bg-destructive/20 text-destructive" />
           <KpiCard label="False Positive Rate" value={`${fpRate}%`} icon={ShieldAlert} color="bg-yellow-500/20 text-yellow-400" />
-          <KpiCard label="Processing Time" value={`${summary.elapsed_seconds}s`} icon={Clock} color="bg-primary/20 text-primary" />
-          <KpiCard label="Cloud Cover" value="5.41%" icon={Cloud} color="bg-blue-400/20 text-blue-400" />
-          <KpiCard label="Backtrack Days" value="7" icon={Undo2} color="bg-purple-400/20 text-purple-400" />
+          <KpiCard label="Processing Time" value={summary ? `${summary.elapsed_seconds}s` : "—"} icon={Clock} color="bg-primary/20 text-primary" />
+          <KpiCard label="Cloud Cover" value={latestCompleted ? `${latestCompleted.cloud_cover}%` : "—"} icon={Cloud} color="bg-blue-400/20 text-blue-400" />
+          <KpiCard label="Backtrack Days" value={latestCompleted ? latestCompleted.backtrack_days.toString() : "—"} icon={Undo2} color="bg-purple-400/20 text-purple-400" />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -111,26 +136,38 @@ const DashboardPage: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {runs.map((run) => (
+                    {runs.map((run) => {
+                      // derive some stats for each row if summary exists
+                      const rSummary = run.summary;
+                      const rTotal = rSummary ? Object.values(rSummary.outputs?.polymer_counts || {}).reduce((a, b) => a + b, 0) : 0;
+                      const rPlastic = rSummary ? (rSummary.outputs?.polymer_counts?.["Marine Debris (Plastic)"] || 0) : 0;
+                      
+                      return (
                       <tr key={run.id} className="border-b border-border/10 hover:bg-muted/20 transition-colors">
-                        <td className="px-5 py-3 font-mono text-primary">{run.id}</td>
+                        <td className="px-5 py-3 font-mono text-primary">{run.id.substring(0, 8)}</td>
                         <td className="px-5 py-3">
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/15 text-emerald-400 rounded-full text-xs font-medium">
-                            <CheckCircle2 className="w-3 h-3" />
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${
+                            run.status === 'COMPLETED' ? "bg-emerald-500/15 text-emerald-400" :
+                            run.status === 'FAILED' ? "bg-destructive/15 text-destructive" :
+                            "bg-yellow-500/15 text-yellow-400"
+                          }`}>
+                            {run.status === 'COMPLETED' ? <CheckCircle2 className="w-3 h-3" /> :
+                             run.status === 'FAILED' ? <XCircle className="w-3 h-3" /> :
+                             <Clock className="w-3 h-3 animate-pulse" />}
                             {run.status}
                           </span>
                         </td>
-                        <td className="px-5 py-3 text-muted-foreground">{run.region}</td>
-                        <td className="px-5 py-3 text-muted-foreground">{run.date}</td>
-                        <td className="px-5 py-3 font-semibold">{run.detections}</td>
-                        <td className="px-5 py-3 font-semibold text-destructive">{run.plastic}</td>
+                        <td className="px-5 py-3 text-muted-foreground">{run.bbox}</td>
+                        <td className="px-5 py-3 text-muted-foreground">{run.target_date}</td>
+                        <td className="px-5 py-3 font-semibold">{rTotal}</td>
+                        <td className="px-5 py-3 font-semibold text-destructive">{rPlastic}</td>
                         <td className="px-5 py-3">
-                          <Link to="/run_details" className="text-primary hover:text-primary/80 transition-colors">
+                          <Link to={`/run_details?id=${run.id}`} className="text-primary hover:text-primary/80 transition-colors">
                             <ExternalLink className="w-4 h-4" />
                           </Link>
                         </td>
                       </tr>
-                    ))}
+                    )})}
                   </tbody>
                 </table>
               </div>
@@ -141,9 +178,9 @@ const DashboardPage: React.FC = () => {
               <h3 className="font-heading font-semibold mb-4">Run Stage Status</h3>
               <div className="flex flex-wrap gap-3">
                 {PIPELINE_STAGES.map((stage) => {
-                  const completed = summary.stages_completed.includes(stage.id);
-                  const failed = summary.stages_failed.includes(stage.id);
-                  const skipped = summary.stages_skipped.includes(stage.id);
+                  const completed = summary?.stages_completed.includes(stage.id) ?? false;
+                  const failed = summary?.stages_failed.includes(stage.id) ?? false;
+                  const skipped = summary?.stages_skipped.includes(stage.id) ?? false;
                   return (
                     <div
                       key={stage.id}

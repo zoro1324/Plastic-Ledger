@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { MapContainer, TileLayer, GeoJSON, useMap } from "react-leaflet";
@@ -19,7 +19,9 @@ import {
   DebrisSummaryRow,
   PIPELINE_STAGES,
   POLYMER_COLORS,
+  PipelineRun
 } from "@/types";
+import { getPipelineRun } from "@/lib/api";
 import {
   ClipboardList,
   CheckCircle2,
@@ -59,6 +61,11 @@ const tooltipStyle = {
 };
 
 const RunDetailPage: React.FC = () => {
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  const runId = searchParams.get("id") || "";
+
+  const [run, setRun] = useState<PipelineRun | null>(null);
   const [summary, setSummary] = useState<RunSummary | null>(null);
   const [detections, setDetections] = useState<DetectionFeatureCollection | null>(null);
   const [attribution, setAttribution] = useState<AttributionEntry[]>([]);
@@ -68,29 +75,72 @@ const RunDetailPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState("overview");
 
   useEffect(() => {
-    Promise.all([
-      loadRunSummary(),
-      loadFinalReport(),
-      loadAttribution(),
-      loadRunMetadata(),
-      loadDebrisSummaryCsv(),
-    ]).then(([sum, det, attr, meta, csvData]) => {
-      setSummary(sum);
-      setDetections(det);
-      setAttribution(attr);
-      setMetadata(meta);
-      setCsv(csvData);
-      setLoading(false);
-    });
-  }, []);
+    if (!runId) return;
+    let interval: ReturnType<typeof setInterval>;
 
-  if (loading || !summary) {
+    const loadStatusAndData = async () => {
+      try {
+        const runData = await getPipelineRun(runId);
+        setRun(runData);
+
+        if (runData.status === "COMPLETED") {
+          const [sum, det, attr, meta, csvData] = await Promise.all([
+            loadRunSummary(runId),
+            loadFinalReport(runId),
+            loadAttribution(runId),
+            loadRunMetadata(runId),
+            loadDebrisSummaryCsv(runId),
+          ]);
+          setSummary(sum);
+          setDetections(det);
+          setAttribution(attr);
+          setMetadata(meta);
+          setCsv(csvData);
+          setLoading(false);
+          clearInterval(interval);
+        } else if (runData.status === "FAILED") {
+          setLoading(false);
+          clearInterval(interval);
+        }
+      } catch (err) {
+        console.error("Error loading run data:", err);
+      }
+    };
+
+    loadStatusAndData();
+    interval = setInterval(loadStatusAndData, 5000);
+
+    return () => clearInterval(interval);
+  }, [runId]);
+
+  if (loading || !run) {
     return (
       <div className="min-h-screen bg-background pt-14 flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <p className="text-sm text-muted-foreground">Loading Run Data...</p>
+        </div>
       </div>
     );
   }
+
+  if (run.status !== "COMPLETED") {
+    return (
+      <div className="min-h-screen bg-background pt-14 flex items-center justify-center">
+        <div className="glass-card p-8 max-w-md w-full text-center">
+          <h2 className="text-xl font-heading font-bold mb-2">Run {run.status}</h2>
+          <p className="text-muted-foreground text-sm mb-6">
+            {run.status === "FAILED" ? run.error_message : "The pipeline is still processing this run."}
+          </p>
+          <Link to="/dashboard" className="px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold inline-block">
+            Back to Dashboard
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (!summary) return null;
 
   const pc = summary.outputs.polymer_counts;
   const totalDetections = Object.values(pc).reduce((a, b) => a + b, 0);
@@ -124,7 +174,7 @@ const RunDetailPage: React.FC = () => {
             <div>
               <h1 className="font-heading text-2xl font-bold flex items-center gap-2">
                 <ClipboardList className="w-6 h-6 text-primary" />
-                Run Detail — <span className="text-primary">run_001</span>
+                Run Detail — <span className="text-primary">{runId.substring(0, 8)}</span>
               </h1>
               <p className="text-sm text-muted-foreground mt-1">
                 Complete overview of pipeline execution and results.
@@ -139,10 +189,10 @@ const RunDetailPage: React.FC = () => {
           {/* Run info cards */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
             {[
-              { icon: MapPin, label: "Bbox", value: `${summary.bbox[0].toFixed(2)}, ${summary.bbox[1].toFixed(2)}` },
-              { icon: Calendar, label: "Target Date", value: summary.target_date },
+              { icon: MapPin, label: "Bbox", value: run.bbox },
+              { icon: Calendar, label: "Target Date", value: run.target_date },
               { icon: Clock, label: "Duration", value: `${summary.elapsed_seconds}s` },
-              { icon: Cloud, label: "Cloud Cover", value: "5.41%" },
+              { icon: Cloud, label: "Cloud Cover", value: `${run.cloud_cover}%` },
               { icon: Cpu, label: "CRS", value: "EPSG:32616" },
               { icon: Layers, label: "Resolution", value: "10 m" },
             ].map((item) => {
@@ -294,10 +344,10 @@ const RunDetailPage: React.FC = () => {
                 <h3 className="font-heading font-semibold mb-4">Quick Links</h3>
                 <div className="grid grid-cols-2 gap-3">
                   {[
-                    { label: "Detection Map", to: "/detection", icon: Map, color: "text-blue-400" },
-                    { label: "Attribution", to: "/attribution", icon: GitBranch, color: "text-emerald-400" },
-                    { label: "Analytics", to: "/analytics", icon: BarChart3, color: "text-purple-400" },
-                    { label: "Reports", to: "/reports", icon: FileText, color: "text-yellow-400" },
+                    { label: "Detection Map", to: `/detection?id=${runId}`, icon: Map, color: "text-blue-400" },
+                    { label: "Attribution", to: `/attribution?id=${runId}`, icon: GitBranch, color: "text-emerald-400" },
+                    { label: "Analytics", to: `/analytics?id=${runId}`, icon: BarChart3, color: "text-purple-400" },
+                    { label: "Reports", to: `/reports?id=${runId}`, icon: FileText, color: "text-yellow-400" },
                   ].map((link) => {
                     const Icon = link.icon;
                     return (
@@ -381,7 +431,7 @@ const RunDetailPage: React.FC = () => {
             <div className="text-center py-12">
               <BarChart3 className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
               <p className="text-muted-foreground mb-4">View detailed analytics on the dedicated page.</p>
-              <Link to="/analytics" className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold">
+              <Link to={`/analytics?id=${runId}`} className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold">
                 Open Analytics <ExternalLink className="w-4 h-4" />
               </Link>
             </div>
@@ -392,7 +442,7 @@ const RunDetailPage: React.FC = () => {
             <div className="text-center py-12">
               <FileText className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
               <p className="text-muted-foreground mb-4">Download and preview all report files.</p>
-              <Link to="/reports" className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold">
+              <Link to={`/reports?id=${runId}`} className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-semibold">
                 Open Reports <ExternalLink className="w-4 h-4" />
               </Link>
             </div>

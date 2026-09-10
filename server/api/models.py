@@ -14,6 +14,7 @@ class PipelineRun(models.Model):
     target_date = models.DateField(help_text="Target date for the run in YYYY-MM-DD")
     cloud_cover = models.IntegerField(default=20)
     backtrack_days = models.IntegerField(default=30)
+    max_clusters = models.PositiveIntegerField(default=5)
     
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
     output_dir = models.CharField(max_length=500, blank=True, null=True)

@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { MapContainer, TileLayer, GeoJSON, useMap } from "react-leaflet";
 import L from "leaflet";
@@ -30,6 +31,8 @@ function FitBounds({ data }: { data: DetectionFeatureCollection | null }) {
 }
 
 const DetectionMapPage: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const runId = searchParams.get("id") ?? "run_001";
   const [data, setData] = useState<DetectionFeatureCollection | null>(null);
   const [loading, setLoading] = useState(true);
   const [showFP, setShowFP] = useState(true);
@@ -41,8 +44,8 @@ const DetectionMapPage: React.FC = () => {
   const [showFilters, setShowFilters] = useState(true);
 
   useEffect(() => {
-    loadFinalReport().then((d) => { setData(d); setLoading(false); }).catch(() => setLoading(false));
-  }, []);
+    loadFinalReport(runId).then((d) => { setData(d); setLoading(false); }).catch(() => setLoading(false));
+  }, [runId]);
 
   const filtered = useMemo(() => {
     if (!data) return null;

@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { motion } from "framer-motion";
-import { MapContainer, TileLayer, CircleMarker, Rectangle, Polyline, Popup } from "react-leaflet";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
-import { loadAttribution, loadBacktrackSummary, loadRunMetadata } from "@/services/dataService";
+import { MapContainer, TileLayer, CircleMarker, Rectangle, Polyline, Popup, useMap } from "react-leaflet";
+import L from "leaflet";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { loadAttribution, loadBacktrackSummary, loadRunMetadata, loadAllBacktrackGeoJsons } from "@/services/dataService";
 import { AttributionEntry, BacktrackEntry, RunMetadata, SOURCE_ICONS } from "@/types";
 import {
   GitBranch,
@@ -11,6 +12,10 @@ import {
   Database,
   Cpu,
   Wind,
+  Play,
+  Pause,
+  RotateCcw,
+  Sparkles,
 } from "lucide-react";
 
 const SCORE_COLORS = {
@@ -20,23 +25,122 @@ const SCORE_COLORS = {
   river: "#10B981",
 };
 
+const TILE_LAYERS = {
+  satellite: {
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Esri",
+    label: "Satellite",
+  },
+  dark: {
+    url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+    attribution: "&copy; CARTO &copy; OpenStreetMap",
+    label: "Dark",
+  },
+  streets: {
+    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: "&copy; OpenStreetMap",
+    label: "Streets",
+  },
+};
+
+// Fit bounds helper
+function FitBacktrackBounds({ backtrack }: { backtrack: BacktrackEntry[] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (backtrack && backtrack.length > 0) {
+      const bounds = L.latLngBounds([]);
+      backtrack.forEach((bt) => {
+        bounds.extend([bt.source_centroid[1], bt.source_centroid[0]]);
+        bounds.extend([bt.source_bbox[1], bt.source_bbox[0]]);
+        bounds.extend([bt.source_bbox[3], bt.source_bbox[2]]);
+      });
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [50, 50] });
+      }
+    }
+  }, [backtrack, map]);
+  return null;
+}
+
 const AttributionPage: React.FC = () => {
   const [attribution, setAttribution] = useState<AttributionEntry[]>([]);
   const [backtrack, setBacktrack] = useState<BacktrackEntry[]>([]);
   const [metadata, setMetadata] = useState<RunMetadata | null>(null);
+  const [backtrackGeoJsons, setBacktrackGeoJsons] = useState<Record<number, any>>({});
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
+  // Map & Animation States — Fixed Satellite map by default
+  const [tileKey, setTileKey] = useState<"satellite" | "dark" | "streets">("satellite");
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [animProgress, setAnimProgress] = useState(1); // 0 to 1
+  const [animSpeed, setAnimSpeed] = useState<number>(1);
+  const [selectedCluster, setSelectedCluster] = useState<number | null>(null);
+
   useEffect(() => {
     Promise.all([loadAttribution(), loadBacktrackSummary(), loadRunMetadata()]).then(
-      ([attr, bt, meta]) => {
+      async ([attr, bt, meta]) => {
         setAttribution(attr);
         setBacktrack(bt);
         setMetadata(meta);
+
+        // Load backtrack GeoJSONs for all clusters
+        const clusterIds = bt.map((b) => b.cluster_id);
+        const geoJsons = await loadAllBacktrackGeoJsons(clusterIds);
+        setBacktrackGeoJsons(geoJsons);
+
         setLoading(false);
       }
     );
   }, []);
+
+  // Animation Loop
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (isPlaying) {
+      timer = setInterval(() => {
+        setAnimProgress((prev) => {
+          if (prev >= 1) return 0.05;
+          return Math.min(1, prev + 0.02 * animSpeed);
+        });
+      }, 50);
+    }
+    return () => clearInterval(timer);
+  }, [isPlaying, animSpeed]);
+
+  // Compute sliced trajectories for animated backtrack paths
+  const slicedTrajectories = useMemo(() => {
+    const lines: { id: string; clusterId: number; positions: [number, number][]; endPoint: [number, number] | null }[] = [];
+
+    Object.entries(backtrackGeoJsons).forEach(([clusterIdStr, geojson]) => {
+      const clusterId = parseInt(clusterIdStr);
+      if (selectedCluster !== null && selectedCluster !== clusterId) return;
+      if (!geojson || !geojson.features) return;
+
+      geojson.features.forEach((feature: any, idx: number) => {
+        if (feature.geometry && feature.geometry.type === "LineString") {
+          const coords = feature.geometry.coordinates; // [[lon, lat], ...]
+          if (!coords || coords.length < 2) return;
+
+          const totalPts = coords.length;
+          const ptsToTake = Math.max(2, Math.floor(totalPts * animProgress));
+          const sliced = coords.slice(0, ptsToTake);
+
+          const positions: [number, number][] = sliced.map(([lon, lat]: [number, number]) => [lat, lon]);
+          const lastPt = positions[positions.length - 1];
+
+          lines.push({
+            id: `${clusterId}-${idx}`,
+            clusterId,
+            positions,
+            endPoint: lastPt,
+          });
+        }
+      });
+    });
+
+    return lines;
+  }, [backtrackGeoJsons, animProgress, selectedCluster]);
 
   if (loading) {
     return (
@@ -58,24 +162,244 @@ const AttributionPage: React.FC = () => {
   const confColor = (c: string) =>
     c === "high" ? "text-emerald-400 bg-emerald-500/15" : c === "medium" ? "text-yellow-400 bg-yellow-500/15" : "text-red-400 bg-red-500/15";
 
+  const currentTile = TILE_LAYERS[tileKey];
+
   return (
     <div className="min-h-screen bg-background pt-14">
-      <div className="max-w-[1500px] mx-auto px-4 sm:px-6 py-6">
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mb-6">
+      <div className="max-w-[1500px] mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* Header */}
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
           <h1 className="font-heading text-2xl font-bold flex items-center gap-2">
             <GitBranch className="w-6 h-6 text-primary" />
-            Source Attribution
+            Source Attribution & Hydrodynamic Backtracking
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Lagrangian particle backtracking shows where debris likely originated from.
+            Lagrangian particle tracking models ocean currents & wind vectors to trace debris back to candidate coastal sources.
           </p>
         </motion.div>
 
+        {/* TOP: Full-Width Hydrodynamic Backtrack Map */}
+        <motion.div
+          initial={{ opacity: 0, y: 15 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="glass-card overflow-hidden flex flex-col"
+        >
+          <div className="px-5 py-3.5 border-b border-border/30 flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-primary" />
+              <h2 className="font-heading font-semibold text-lg">Hydrodynamic Backtrack Map</h2>
+            </div>
+
+            <div className="flex items-center gap-3">
+              {/* Cluster Filter */}
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">Cluster Filter:</span>
+                <select
+                  value={selectedCluster ?? "all"}
+                  onChange={(e) => setSelectedCluster(e.target.value === "all" ? null : parseInt(e.target.value))}
+                  className="px-2.5 py-1 bg-muted/50 border border-border/50 rounded-lg text-xs text-foreground focus:outline-none"
+                >
+                  <option value="all">All Clusters ({backtrack.length})</option>
+                  {backtrack.map((b) => (
+                    <option key={b.cluster_id} value={b.cluster_id}>
+                      Cluster #{b.cluster_id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Satellite / Dark / Streets layer switcher */}
+              <div className="flex items-center gap-1 bg-muted/40 p-1 rounded-lg border border-border/30">
+                {(["satellite", "dark", "streets"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => setTileKey(mode)}
+                    className={`px-3 py-1 text-xs font-medium rounded-md capitalize transition-colors ${
+                      tileKey === mode ? "bg-primary text-primary-foreground font-semibold shadow" : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Map Canvas */}
+          <div className="h-[480px] w-full relative">
+            <MapContainer
+              center={[16.28, -88.5]}
+              zoom={9}
+              className="w-full h-full"
+              style={{ background: "#0A1628" }}
+              zoomControl={false}
+            >
+              <TileLayer url={currentTile.url} attribution={currentTile.attribution} />
+              <FitBacktrackBounds backtrack={backtrack} />
+
+              {/* Hydrodynamic Backtrack Trajectory Paths (Bright Cyan Blue Glow) */}
+              {slicedTrajectories.map((traj) => (
+                <Polyline
+                  key={traj.id}
+                  positions={traj.positions}
+                  pathOptions={{
+                    color: "#38bdf8", // Sky blue / cyan trajectory path matching backtrack_map.html
+                    weight: 1.5,
+                    opacity: 0.65,
+                  }}
+                />
+              ))}
+
+              {/* Leading edge particle pulse dots during animation */}
+              {isPlaying &&
+                slicedTrajectories.map((traj) =>
+                  traj.endPoint ? (
+                    <CircleMarker
+                      key={`head-${traj.id}`}
+                      center={traj.endPoint}
+                      radius={2.5}
+                      pathOptions={{
+                        color: "#38bdf8",
+                        fillColor: "#60a5fa",
+                        fillOpacity: 0.9,
+                        weight: 1,
+                      }}
+                    />
+                  ) : null
+                )}
+
+              {/* Source Region Bounding Boxes (Orange) */}
+              {backtrack.map((bt) => (
+                <Rectangle
+                  key={`bbox-${bt.cluster_id}`}
+                  bounds={[
+                    [bt.source_bbox[1], bt.source_bbox[0]],
+                    [bt.source_bbox[3], bt.source_bbox[2]],
+                  ]}
+                  pathOptions={{
+                    color: "#F59E0B",
+                    weight: 1.8,
+                    fillColor: "#F59E0B",
+                    fillOpacity: 0.12,
+                    dashArray: "4 4",
+                  }}
+                >
+                  <Popup>
+                    <div className="text-xs">
+                      <strong>Source Area for Cluster #{bt.cluster_id}</strong><br />
+                      BBox: [{bt.source_bbox.join(", ")}]<br />
+                      Probability: {(bt.source_probability * 100).toFixed(1)}%
+                    </div>
+                  </Popup>
+                </Rectangle>
+              ))}
+
+              {/* Cluster Origin Markers (Red Circle Markers) */}
+              {backtrack.map((bt) => (
+                <CircleMarker
+                  key={`cluster-${bt.cluster_id}`}
+                  center={[bt.source_centroid[1], bt.source_centroid[0]]}
+                  radius={8}
+                  pathOptions={{
+                    color: "#FFFFFF",
+                    fillColor: "#EF4444",
+                    fillOpacity: 0.9,
+                    weight: 2,
+                  }}
+                >
+                  <Popup>
+                    <div className="text-xs">
+                      <strong>Debris Cluster #{bt.cluster_id}</strong><br />
+                      Particles Tracked: {bt.n_particles}<br />
+                      Backtrack Duration: {bt.days_to_source} Days
+                    </div>
+                  </Popup>
+                </CircleMarker>
+              ))}
+            </MapContainer>
+
+            {/* Map Legend Overlay */}
+            <div className="absolute bottom-3 left-3 z-[1000] glass px-3.5 py-2.5 rounded-lg text-xs space-y-1.5 shadow-lg">
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-red-500 border border-white" />
+                <span className="text-foreground font-medium">Debris Detection Point</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-5 h-1 bg-sky-400 rounded" />
+                <span className="text-foreground font-medium">Backtrack Particle Path</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 border border-dashed border-amber-500 bg-amber-500/20 rounded-sm" />
+                <span className="text-foreground font-medium">Inferred Source Region</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Animation Controls Toolbar */}
+          <div className="p-3.5 bg-muted/20 border-t border-border/30 flex flex-wrap items-center justify-between gap-4 text-xs">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setIsPlaying(!isPlaying)}
+                className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-lg font-semibold hover:bg-primary/90 transition-colors"
+              >
+                {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                {isPlaying ? "Pause" : "Play Animation"}
+              </button>
+              <button
+                onClick={() => {
+                  setIsPlaying(false);
+                  setAnimProgress(1);
+                }}
+                className="p-2 glass rounded-lg text-muted-foreground hover:text-foreground transition-colors"
+                title="Reset Timeline"
+              >
+                <RotateCcw className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Timeline Slider */}
+            <div className="flex-1 min-w-[240px] flex items-center gap-3">
+              <span className="text-muted-foreground font-mono font-medium">Day -7.0</span>
+              <input
+                type="range"
+                min={0.05}
+                max={1}
+                step={0.01}
+                value={animProgress}
+                onChange={(e) => {
+                  setIsPlaying(false);
+                  setAnimProgress(parseFloat(e.target.value));
+                }}
+                className="flex-1 accent-primary cursor-pointer h-2"
+              />
+              <span className="text-muted-foreground font-mono font-medium">Day 0.0</span>
+            </div>
+
+            {/* Speed Buttons */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-muted-foreground mr-1 font-medium">Speed:</span>
+              {[1, 2, 4].map((spd) => (
+                <button
+                  key={spd}
+                  onClick={() => setAnimSpeed(spd)}
+                  className={`px-2.5 py-1 rounded text-xs font-mono transition-colors ${
+                    animSpeed === spd ? "bg-primary/20 text-primary border border-primary/30 font-semibold" : "text-muted-foreground hover:bg-muted/40"
+                  }`}
+                >
+                  {spd}x
+                </button>
+              ))}
+            </div>
+          </div>
+        </motion.div>
+
+        {/* BOTTOM: Attribution Results Table Next to Charts / Config */}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
           {/* Attribution Table */}
           <div className="glass-card overflow-hidden">
-            <div className="px-5 py-4 border-b border-border/30">
-              <h2 className="font-heading font-semibold">Attribution Results</h2>
+            <div className="px-5 py-4 border-b border-border/30 flex items-center justify-between">
+              <h2 className="font-heading font-semibold text-lg">Attribution Results</h2>
+              <span className="text-xs text-muted-foreground">{attribution.length} records</span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -93,8 +417,13 @@ const AttributionPage: React.FC = () => {
                 <tbody>
                   {attribution.map((a) => (
                     <React.Fragment key={a.debris_cluster_id}>
-                      <tr className="border-b border-border/10 hover:bg-muted/20 transition-colors">
-                        <td className="px-4 py-3 font-mono text-primary">#{a.debris_cluster_id}</td>
+                      <tr
+                        onClick={() => setSelectedCluster(selectedCluster === a.debris_cluster_id ? null : a.debris_cluster_id)}
+                        className={`border-b border-border/10 cursor-pointer transition-colors ${
+                          selectedCluster === a.debris_cluster_id ? "bg-primary/15" : "hover:bg-muted/20"
+                        }`}
+                      >
+                        <td className="px-4 py-3 font-mono text-primary font-semibold">#{a.debris_cluster_id}</td>
                         <td className="px-4 py-3">
                           <span className="flex items-center gap-1.5">
                             <span>{SOURCE_ICONS[a.source_type] || "❓"}</span>
@@ -110,7 +439,12 @@ const AttributionPage: React.FC = () => {
                           </span>
                         </td>
                         <td className="px-4 py-3">
-                          <button onClick={() => setExpandedId(expandedId === a.debris_cluster_id ? null : a.debris_cluster_id)}>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedId(expandedId === a.debris_cluster_id ? null : a.debris_cluster_id);
+                            }}
+                          >
                             {expandedId === a.debris_cluster_id ? (
                               <ChevronUp className="w-4 h-4 text-muted-foreground" />
                             ) : (
@@ -133,142 +467,81 @@ const AttributionPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Backtrack Map */}
-          <div className="glass-card overflow-hidden">
-            <div className="px-5 py-4 border-b border-border/30">
-              <h2 className="font-heading font-semibold">Backtrack Map</h2>
-            </div>
-            <div className="h-[380px]">
-              <MapContainer
-                center={[16.28, -88.5]}
-                zoom={9}
-                className="w-full h-full"
-                style={{ background: "#0A1628" }}
-                zoomControl={false}
-              >
-                <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
-                {/* Cluster markers (red) */}
-                {backtrack.map((bt) => (
-                  <CircleMarker
-                    key={bt.cluster_id}
-                    center={[bt.source_centroid[1], bt.source_centroid[0]]}
-                    radius={7}
-                    pathOptions={{ color: "#EF4444", fillColor: "#EF4444", fillOpacity: 0.8, weight: 2 }}
-                  >
-                    <Popup>
-                      <div className="text-xs">
-                        <strong>Cluster #{bt.cluster_id}</strong><br />
-                        Particles: {bt.n_particles}<br />
-                        Days: {bt.days_to_source}
-                      </div>
-                    </Popup>
-                  </CircleMarker>
-                ))}
-                {/* Source bboxes (orange) */}
-                {backtrack.map((bt) => (
-                  <Rectangle
-                    key={`bbox-${bt.cluster_id}`}
-                    bounds={[
-                      [bt.source_bbox[1], bt.source_bbox[0]],
-                      [bt.source_bbox[3], bt.source_bbox[2]],
-                    ]}
-                    pathOptions={{ color: "#F59E0B", weight: 1.5, fillColor: "#F59E0B", fillOpacity: 0.08, dashArray: "4 4" }}
-                  />
-                ))}
-                {/* Connection lines */}
-                {attribution.map((a) => {
-                  const bt = backtrack.find((b) => b.cluster_id === a.debris_cluster_id);
-                  if (!bt) return null;
-                  return (
-                    <Polyline
-                      key={`line-${a.debris_cluster_id}`}
-                      positions={[
-                        [bt.source_centroid[1], bt.source_centroid[0]],
-                        [a.source_centroid[1], a.source_centroid[0]],
-                      ]}
-                      pathOptions={{ color: "#00C9A7", weight: 1.5, dashArray: "6 4", opacity: 0.6 }}
-                    />
-                  );
-                })}
-              </MapContainer>
-            </div>
-          </div>
-        </div>
-
-        {/* Score Breakdown + Config */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mt-6">
-          {/* Score breakdown chart */}
-          <div className="glass-card p-5">
-            <h3 className="font-heading font-semibold mb-4">Source Score Breakdown</h3>
-            <div className="h-[250px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={scoreData} layout="vertical" barGap={2}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(215 20% 16%)" />
-                  <XAxis type="number" domain={[0, 50]} tick={{ fill: "#6B7280", fontSize: 11 }} />
-                  <YAxis type="category" dataKey="name" tick={{ fill: "#9CA3AF", fontSize: 12 }} width={50} />
-                  <Tooltip
-                    contentStyle={{
-                      background: "hsl(220 30% 8%)",
-                      border: "1px solid hsl(215 20% 16%)",
-                      borderRadius: "8px",
-                      fontSize: "12px",
-                    }}
-                  />
-                  <Bar dataKey="fishing" stackId="a" fill={SCORE_COLORS.fishing} name="Fishing" />
-                  <Bar dataKey="industrial" stackId="a" fill={SCORE_COLORS.industrial} name="Industrial" />
-                  <Bar dataKey="shipping" stackId="a" fill={SCORE_COLORS.shipping} name="Shipping" />
-                  <Bar dataKey="river" stackId="a" fill={SCORE_COLORS.river} name="River" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="flex gap-4 mt-3 justify-center">
-              {Object.entries(SCORE_COLORS).map(([key, color]) => (
-                <div key={key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: color }} />
-                  <span className="capitalize">{key}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Backtrack config */}
-          {metadata && (
+          {/* Right side: Score Breakdown Chart & Config */}
+          <div className="space-y-6">
+            {/* Score breakdown chart */}
             <div className="glass-card p-5">
-              <h3 className="font-heading font-semibold mb-4">Backtrack Configuration</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {[
-                  { icon: Database, label: "Ocean Data", value: metadata.cmems_product.split("_").slice(-2).join("_") },
-                  { icon: Wind, label: "Wind Data", value: "ERA5 (u10, v10)" },
-                  { icon: Cpu, label: "Integrator", value: metadata.integrator },
-                  { icon: Cpu, label: "Time Step", value: `${metadata.time_step_hours}h` },
-                  { icon: GitBranch, label: "Particles", value: `${metadata.n_particles} per cluster` },
-                  { icon: GitBranch, label: "Duration", value: `${metadata.bt_days} days` },
-                  { icon: Cpu, label: "Diffusion (Kh)", value: metadata.horizontal_diffusion_kh.toString() },
-                ].map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <div key={item.label} className="flex items-start gap-3 p-3 bg-muted/20 rounded-lg">
-                      <Icon className="w-4 h-4 text-primary mt-0.5" />
-                      <div>
-                        <div className="text-xs text-muted-foreground">{item.label}</div>
-                        <div className="text-sm font-medium">{item.value}</div>
-                      </div>
-                    </div>
-                  );
-                })}
+              <h3 className="font-heading font-semibold mb-4">Source Score Breakdown</h3>
+              <div className="h-[230px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={scoreData} layout="vertical" barGap={2}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(215 20% 16%)" />
+                    <XAxis type="number" domain={[0, 50]} tick={{ fill: "#6B7280", fontSize: 11 }} />
+                    <YAxis type="category" dataKey="name" tick={{ fill: "#9CA3AF", fontSize: 12 }} width={50} />
+                    <Tooltip
+                      contentStyle={{
+                        background: "hsl(220 30% 8%)",
+                        border: "1px solid hsl(215 20% 16%)",
+                        borderRadius: "8px",
+                        fontSize: "12px",
+                      }}
+                    />
+                    <Bar dataKey="fishing" stackId="a" fill={SCORE_COLORS.fishing} name="Fishing" />
+                    <Bar dataKey="industrial" stackId="a" fill={SCORE_COLORS.industrial} name="Industrial" />
+                    <Bar dataKey="shipping" stackId="a" fill={SCORE_COLORS.shipping} name="Shipping" />
+                    <Bar dataKey="river" stackId="a" fill={SCORE_COLORS.river} name="River" />
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
-              <div className="mt-4">
-                <div className="text-xs text-muted-foreground mb-2">Kernels</div>
-                <div className="flex flex-wrap gap-2">
-                  {metadata.kernels.map((k) => (
-                    <span key={k} className="px-2.5 py-1 bg-primary/10 text-primary rounded-md text-xs font-medium">
-                      {k}
-                    </span>
-                  ))}
-                </div>
+              <div className="flex gap-4 mt-3 justify-center">
+                {Object.entries(SCORE_COLORS).map(([key, color]) => (
+                  <div key={key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: color }} />
+                    <span className="capitalize">{key}</span>
+                  </div>
+                ))}
               </div>
             </div>
-          )}
+
+            {/* Backtrack config */}
+            {metadata && (
+              <div className="glass-card p-5">
+                <h3 className="font-heading font-semibold mb-4">Backtrack Configuration</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  {[
+                    { icon: Database, label: "Ocean Data", value: metadata.cmems_product.split("_").slice(-2).join("_") },
+                    { icon: Wind, label: "Wind Data", value: "ERA5 (u10, v10)" },
+                    { icon: Cpu, label: "Integrator", value: metadata.integrator },
+                    { icon: Cpu, label: "Time Step", value: `${metadata.time_step_hours}h` },
+                    { icon: GitBranch, label: "Particles", value: `${metadata.n_particles} per cluster` },
+                    { icon: GitBranch, label: "Duration", value: `${metadata.bt_days} days` },
+                    { icon: Cpu, label: "Diffusion (Kh)", value: metadata.horizontal_diffusion_kh.toString() },
+                  ].map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <div key={item.label} className="flex items-start gap-3 p-3 bg-muted/20 rounded-lg">
+                        <Icon className="w-4 h-4 text-primary mt-0.5" />
+                        <div>
+                          <div className="text-xs text-muted-foreground">{item.label}</div>
+                          <div className="text-sm font-medium">{item.value}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="mt-4">
+                  <div className="text-xs text-muted-foreground mb-2">Kernels</div>
+                  <div className="flex flex-wrap gap-2">
+                    {metadata.kernels.map((k) => (
+                      <span key={k} className="px-2.5 py-1 bg-primary/10 text-primary rounded-md text-xs font-medium">
+                        {k}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

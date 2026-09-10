@@ -44,6 +44,25 @@ export async function loadIngestMetadata(): Promise<IngestMetadata> {
   return fetchJson<IngestMetadata>(`${BASE}/ingest_metadata.json`);
 }
 
+export async function loadBacktrackGeoJson(clusterId: number): Promise<any> {
+  return fetchJson<any>(`${BASE}/attribution/backtrack_${clusterId}.geojson`);
+}
+
+export async function loadAllBacktrackGeoJsons(clusterIds: number[]): Promise<Record<number, any>> {
+  const results: Record<number, any> = {};
+  await Promise.all(
+    clusterIds.map(async (id) => {
+      try {
+        const geojson = await loadBacktrackGeoJson(id);
+        results[id] = geojson;
+      } catch (err) {
+        console.warn(`Could not load backtrack GeoJSON for cluster ${id}`, err);
+      }
+    })
+  );
+  return results;
+}
+
 export async function loadDebrisSummaryCsv(): Promise<DebrisSummaryRow[]> {
   const res = await fetch(`${BASE}/reports/debris_summary.csv`);
   const text = await res.text();

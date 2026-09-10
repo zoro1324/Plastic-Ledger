@@ -38,6 +38,7 @@ def execute_pipeline(run_id):
             cloud_cover=run_instance.cloud_cover,
             backtrack_days=run_instance.backtrack_days,
             max_clusters=run_instance.max_clusters,
+            filter_by_bbox=not run_instance.process_all_patches,
             config_path=str(config_path)
         )
         

@@ -22,6 +22,7 @@ export async function createPipelineRun(data: {
   cloud_cover?: number;
   backtrack_days?: number;
   max_clusters?: number;
+  process_all_patches?: boolean;
 }): Promise<PipelineRun> {
   const res = await fetch("/api/pipeline/runs/", {
     method: "POST",

@@ -137,6 +137,7 @@ const TrackingPage: React.FC = () => {
   const [cloudCover, setCloudCover] = useState<number>(20);
   const [backtrackDays, setBacktrackDays] = useState<number>(30);
   const [maxClusters, setMaxClusters] = useState<number>(5);
+  const [processAllPatches, setProcessAllPatches] = useState<boolean>(false);
   const [tileKey, setTileKey] = useState<"satellite" | "streets">("satellite");
   const [areaInfo, setAreaInfo] = useState<{ width: number; height: number; area: number } | null>(null);
   const [rawInput, setRawInput] = useState<string>(
@@ -217,6 +218,7 @@ const TrackingPage: React.FC = () => {
         cloud_cover: cloudCover,
         backtrack_days: backtrackDays,
         max_clusters: maxClusters,
+        process_all_patches: processAllPatches,
       });
       navigate("/dashboard");
     } catch (err) {
@@ -327,6 +329,20 @@ const TrackingPage: React.FC = () => {
                 />
               </label>
             </div>
+            <label className="flex items-start gap-2 rounded-lg border border-border/50 bg-muted/20 p-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={processAllPatches}
+                onChange={(e) => setProcessAllPatches(e.target.checked)}
+                className="mt-0.5 accent-primary"
+              />
+              <span>
+                <span className="block text-sm font-medium text-foreground">Process all patches</span>
+                <span className="block text-[11px] text-muted-foreground">
+                  Run detection across the full satellite tile, not only patches intersecting the bbox.
+                </span>
+              </span>
+            </label>
           </div>
 
           {/* Coordinate Display Table */}

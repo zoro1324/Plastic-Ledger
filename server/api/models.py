@@ -15,6 +15,7 @@ class PipelineRun(models.Model):
     cloud_cover = models.IntegerField(default=20)
     backtrack_days = models.IntegerField(default=30)
     max_clusters = models.PositiveIntegerField(default=5)
+    process_all_patches = models.BooleanField(default=False)
     
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
     output_dir = models.CharField(max_length=500, blank=True, null=True)

@@ -12,6 +12,7 @@ class PipelineRunAdmin(admin.ModelAdmin):
 		'cloud_cover',
 		'backtrack_days',
 		'max_clusters',
+		'process_all_patches',
 		'created_at',
 		'completed_at',
 	)

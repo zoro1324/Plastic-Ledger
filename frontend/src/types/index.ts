@@ -6,6 +6,7 @@ export interface PipelineRun {
   cloud_cover: number;
   backtrack_days: number;
   max_clusters: number;
+  process_all_patches: boolean;
   output_dir: string | null;
   created_at: string;
   completed_at: string | null;
